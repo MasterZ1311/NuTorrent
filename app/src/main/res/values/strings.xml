@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NuTorrent</string>
+    <string name="notification_channel_name">Torrent Downloads</string>
+    <string name="notification_channel_description">Active torrent transfer status and controls</string>
+</resources>
