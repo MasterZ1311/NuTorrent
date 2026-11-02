@@ -1,0 +1,75 @@
+name: NuTorrent CI
+
+on:
+  push:
+    branches: [ main, master, MZ-Main ]
+  pull_request:
+    branches: [ main, master, MZ-Main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --continue
+
+      - name: Run Android Lint
+        run: ./gradlew lintDebug
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease
+        env:
+          KEYSTORE_FILE: ""
+          KEYSTORE_PASSWORD: ""
+          KEY_ALIAS: ""
+          KEY_PASSWORD: ""
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
+          retention-days: 7
+
+      - name: Upload Lint Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-reports
+          path: app/build/reports/lint-results-debug.*
+          retention-days: 7
+
+      - name: Upload Build Artifacts (APKs)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-artifacts
+          path: app/build/outputs/apk/**/*.apk
+          retention-days: 14
