@@ -9,6 +9,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.PowerManager
+import android.net.wifi.WifiManager
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.delay
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -29,7 +33,54 @@ import kotlinx.coroutines.launch
 
 class TorrentDownloadService : Service() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val serviceExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Lg.e(LogCategory.SERVICE, "Uncaught error in TorrentDownloadService: ${throwable.message}", throwable)
+    }
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main + serviceExceptionHandler)
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    private fun acquireWakeAndWifiLocks() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NuTorrent:DownloadWakeLock")?.apply {
+                    setReferenceCounted(false)
+                    acquire(24 * 60 * 60 * 1000L)
+                }
+            }
+            if (wifiLock == null) {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL
+                }
+                wifiLock = wifiManager?.createWifiLock(mode, "NuTorrent:DownloadWifiLock")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+        } catch (e: Exception) {
+            Lg.w(LogCategory.SERVICE, "Failed acquiring WakeLock or WifiLock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeAndWifiLocks() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+            wakeLock = null
+        } catch (e: Exception) {
+            Lg.w(LogCategory.SERVICE, "Failed releasing WakeLock: ${e.message}")
+        }
+        try {
+            wifiLock?.let { if (it.isHeld) it.release() }
+            wifiLock = null
+        } catch (e: Exception) {
+            Lg.w(LogCategory.SERVICE, "Failed releasing WifiLock: ${e.message}")
+        }
+    }
     private var observerJob: Job? = null
     private lateinit var notificationManager: NotificationManager
 
@@ -106,10 +157,18 @@ class TorrentDownloadService : Service() {
                 val activeDownloads = torrents.filter { it.state.isActive }
 
                 if (activeDownloads.isEmpty()) {
-                    Lg.d(LogCategory.SERVICE, "No active torrent transfers. Stopping foreground service.")
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                    return@collectLatest
+                    // Grace period before stopping to prevent rapid service flapping
+                    delay(5000L)
+                    val stillEmpty = repository.torrentsList.value.none { it.state.isActive }
+                    if (stillEmpty) {
+                        Lg.d(LogCategory.SERVICE, "No active torrent transfers after grace period. Stopping foreground service.")
+                        releaseWakeAndWifiLocks()
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return@collectLatest
+                    }
+                } else {
+                    acquireWakeAndWifiLocks()
                 }
 
                 var totalDownSpeed = 0L
@@ -144,7 +203,11 @@ class TorrentDownloadService : Service() {
                     "$overallPercent% • $speedSummary$singleEta"
                 }
                 val notification = createNotification(title, content, overallPercent, indeterminate = isFetchingMetadata)
-                notificationManager.notify(NOTIFICATION_ID, notification)
+                try {
+                    notificationManager.notify(NOTIFICATION_ID, notification)
+                } catch (e: Exception) {
+                    Lg.w(LogCategory.SERVICE, "Could not update notification: ${e.message}")
+                }
             }
         }
     }
@@ -238,6 +301,7 @@ class TorrentDownloadService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning = false
+        releaseWakeAndWifiLocks()
         serviceScope.cancel()
         Lg.d(LogCategory.SERVICE, "TorrentDownloadService destroyed cleanly.")
     }

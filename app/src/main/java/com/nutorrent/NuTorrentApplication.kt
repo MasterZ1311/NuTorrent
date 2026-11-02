@@ -12,6 +12,7 @@ import com.nutorrent.data.repository.SettingsRepository
 import com.nutorrent.data.repository.TorrentRepository
 import com.nutorrent.service.TorrentDownloadService
 import com.nutorrent.torrent.engine.TorrentEngine
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,7 +24,10 @@ import kotlinx.coroutines.launch
 
 class NuTorrentApplication : Application() {
 
-    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val appExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Lg.e(LogCategory.ENGINE, "Uncaught app coroutine exception: ${throwable.message}", throwable)
+    }
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + appExceptionHandler)
 
     lateinit var settingsRepository: SettingsRepository
         private set
@@ -42,6 +46,14 @@ class NuTorrentApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Lg.e(LogCategory.ENGINE, "Uncaught exception on thread ${thread.name}: ${throwable.message}", throwable)
+            try {
+                val file = java.io.File(filesDir, "last_crash.log")
+                file.writeText("${java.util.Date()}\nThread: ${thread.name}\n${android.util.Log.getStackTraceString(throwable)}")
+            } catch (_: Exception) {}
+        }
 
         settingsRepository = SettingsRepository(this)
         torrentEngine = TorrentEngine(

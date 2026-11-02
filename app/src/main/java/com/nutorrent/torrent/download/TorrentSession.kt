@@ -228,7 +228,7 @@ class TorrentSession(
                         pieceManager.onPieceWriteFailed(verifiedResult.pieceIndex)
                         Lg.e(LogCategory.STORAGE, "Storage error writing piece ${verifiedResult.pieceIndex}: ${e.userMessage}", e)
                         setError(e)
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         pieceManager.onPieceWriteFailed(verifiedResult.pieceIndex)
                         Lg.e(LogCategory.STORAGE, "Failed writing piece ${verifiedResult.pieceIndex}", e)
                         val appError = AppError.fromThrowable(e, storage.getAvailableSpace(), metadata.totalLength)

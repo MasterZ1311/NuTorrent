@@ -312,6 +312,24 @@ open class FileTorrentStorage(
  * Enables persistent downloading to user-selected folders across Internal Storage, SD Cards, and USB drives.
  * Random-access reads and writes are performed through [ParcelFileDescriptor] and seekable NIO [java.nio.channels.FileChannel].
  */
+class CachedPfdChannel(
+    val pfd: ParcelFileDescriptor
+) {
+    val outputStream = FileOutputStream(pfd.fileDescriptor)
+    val writeChannel: java.nio.channels.FileChannel = outputStream.channel
+
+    val inputStream = FileInputStream(pfd.fileDescriptor)
+    val readChannel: java.nio.channels.FileChannel = inputStream.channel
+
+    fun close() {
+        try { writeChannel.close() } catch (_: Exception) {}
+        try { readChannel.close() } catch (_: Exception) {}
+        try { outputStream.close() } catch (_: Exception) {}
+        try { inputStream.close() } catch (_: Exception) {}
+        try { pfd.close() } catch (_: Exception) {}
+    }
+}
+
 class DocumentFileTorrentStorage(
     private val context: Context,
     val treeUri: Uri,
@@ -321,6 +339,22 @@ class DocumentFileTorrentStorage(
 
     private val fileUriMap = mutableMapOf<Int, Uri>()
     private val openPfds = mutableMapOf<Int, ParcelFileDescriptor>()
+    private val openChannels = mutableMapOf<Int, CachedPfdChannel>()
+
+    private fun getOrOpenChannel(fileIndex: Int): CachedPfdChannel {
+        return openChannels.getOrPut(fileIndex) {
+            val uri = fileUriMap[fileIndex]
+                ?: throw AppError.InaccessibleFile("file #$fileIndex", "File URI not resolved")
+            val pfd = try {
+                context.contentResolver.openFileDescriptor(uri, "rw")
+                    ?: throw AppError.InaccessibleFile("file #$fileIndex", "ContentResolver returned null descriptor")
+            } catch (e: Exception) {
+                throw AppError.InaccessibleFile("file #$fileIndex", e.message ?: "Failed opening file descriptor", e)
+            }
+            openPfds[fileIndex] = pfd
+            CachedPfdChannel(pfd)
+        }
+    }
 
     override fun getAvailableSpace(): Long? {
         return StorageCalculator.getAvailableBytes(context, treeUri.toString())
@@ -431,15 +465,13 @@ class DocumentFileTorrentStorage(
 
         for (fileMeta in metadata.files) {
             val slice = fileMeta.intersection(globalOffset, rangeEnd) ?: continue
-            val pfd = getOrOpenPfd(fileMeta.index)
-            synchronized(pfd) {
+            val channelHandle = getOrOpenChannel(fileMeta.index)
+            synchronized(channelHandle) {
                 try {
-                    val fos = FileOutputStream(pfd.fileDescriptor)
-                    val channel = fos.channel
-                    channel.position(slice.fileOffset)
+                    channelHandle.writeChannel.position(slice.fileOffset)
                     val buffer = ByteBuffer.wrap(data, slice.bufferOffset, slice.byteCount)
                     while (buffer.hasRemaining()) {
-                        channel.write(buffer)
+                        channelHandle.writeChannel.write(buffer)
                     }
                 } catch (e: IOException) {
                     throw AppError.fromThrowable(e, getAvailableSpace(), metadata.totalLength)
@@ -454,15 +486,13 @@ class DocumentFileTorrentStorage(
 
         for (fileMeta in metadata.files) {
             val slice = fileMeta.intersection(globalOffset, rangeEnd) ?: continue
-            val pfd = getOrOpenPfd(fileMeta.index)
-            synchronized(pfd) {
+            val channelHandle = getOrOpenChannel(fileMeta.index)
+            synchronized(channelHandle) {
                 try {
-                    val fis = FileInputStream(pfd.fileDescriptor)
-                    val channel = fis.channel
-                    channel.position(slice.fileOffset)
+                    channelHandle.readChannel.position(slice.fileOffset)
                     val byteBuf = ByteBuffer.wrap(buffer, slice.bufferOffset, slice.byteCount)
                     while (byteBuf.hasRemaining()) {
-                        val read = channel.read(byteBuf)
+                        val read = channelHandle.readChannel.read(byteBuf)
                         if (read == -1) break
                     }
                 } catch (e: Exception) {
@@ -581,13 +611,10 @@ class DocumentFileTorrentStorage(
     }
 
     override fun close() {
-        for (pfd in openPfds.values) {
-            try {
-                pfd.close()
-            } catch (e: Exception) {
-                Lg.w(LogCategory.STORAGE, "Error closing ParcelFileDescriptor", e)
-            }
+        for (handle in openChannels.values) {
+            handle.close()
         }
+        openChannels.clear()
         openPfds.clear()
         fileUriMap.clear()
     }

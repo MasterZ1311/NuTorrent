@@ -10,8 +10,7 @@ data class BlockEntry(
     val offset: Int,
     val length: Int,
     var isDownloaded: Boolean = false,
-    var isRequested: Boolean = false,
-    var data: ByteArray? = null
+    var isRequested: Boolean = false
 )
 
 /**
@@ -129,7 +128,6 @@ class PieceDownloader(
 
         if (!block.isDownloaded) {
             System.arraycopy(data, 0, pieceData, offset, data.size)
-            block.data = data
             block.isDownloaded = true
             block.isRequested = false
             downloadedCount++
@@ -166,7 +164,6 @@ class PieceDownloader(
             val block = blocks[i]
             block.isDownloaded = false
             block.isRequested = false
-            block.data = null
             requestTimestamps[i] = 0L
         }
         Arrays.fill(pieceData, 0.toByte())

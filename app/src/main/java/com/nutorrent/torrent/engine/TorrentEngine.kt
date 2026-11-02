@@ -10,6 +10,7 @@ import com.nutorrent.core.util.LogCategory
 import com.nutorrent.data.storage.TorrentStorage
 import com.nutorrent.torrent.download.TorrentSession
 import com.nutorrent.torrent.tracker.TrackerClient
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,7 +32,10 @@ class TorrentEngine(
     val bandwidthManager: com.nutorrent.torrent.network.BandwidthManager = com.nutorrent.torrent.network.BandwidthManager(),
     val context: android.content.Context? = null
 ) {
-    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val engineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Lg.e(LogCategory.ENGINE, "Uncaught engine coroutine exception: ${throwable.message}", throwable)
+    }
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + engineExceptionHandler)
     private val sessions = ConcurrentHashMap<TorrentId, TorrentSession>()
     private val queueOrder = CopyOnWriteArrayList<TorrentId>()
     val engineStartTime: Long = System.currentTimeMillis()

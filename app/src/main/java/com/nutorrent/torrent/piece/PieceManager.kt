@@ -24,6 +24,12 @@ class PieceManager(
 
     private val pieceStates = Array(totalPieces) { PieceState.MISSING }
     private val pieceAvailability = IntArray(totalPieces) { 0 }
+    val maxConcurrentPieces: Int = when {
+        metadata.pieceLength >= 8L * 1024 * 1024 -> 4
+        metadata.pieceLength >= 4L * 1024 * 1024 -> 6
+        metadata.pieceLength >= 2L * 1024 * 1024 -> 8
+        else -> 12
+    }
     private val activeDownloaders = ConcurrentHashMap<Int, PieceDownloader>()
     private val filePriorities = Array(metadata.files.size) { FilePriority.NORMAL }
     private var cachedPiecePriorities: List<FilePriority> = calculatePiecePriorities()
@@ -163,7 +169,8 @@ class PieceManager(
             }
         }
 
-        // 2. Select a new piece to download using the scheduler
+        // 2. Select a new piece to download using the scheduler (budgeted)
+        if (activeDownloaders.size >= maxConcurrentPieces) return null
         val piecePriorities = cachedPiecePriorities
         val nextPieceIndex = scheduler.selectNextPiece(peerBitfield, pieceStates.asList(), pieceAvailability, piecePriorities)
             ?: return null
@@ -201,7 +208,8 @@ class PieceManager(
             }
         }
 
-        // 2. Pick a new piece from allowed pieces that this peer has and we still need
+        // 2. Pick a new piece from allowed pieces that this peer has and we still need (budgeted)
+        if (activeDownloaders.size >= maxConcurrentPieces) return null
         val piecePriorities = cachedPiecePriorities
         val candidate = allowedPieces
             .filter { idx ->
