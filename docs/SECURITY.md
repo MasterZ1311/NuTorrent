@@ -1,7 +1,7 @@
 # Security & Trust Boundaries — NuTorrent
 
 **Specification Version:** v1.0 Production  
-**Package:** `com.nutorrent.app.*`  
+**Package:** `com.nutorrent.*`  
 
 ---
 

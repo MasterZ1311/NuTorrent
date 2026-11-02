@@ -2,7 +2,7 @@
 
 **Client Identifier:** `-NU1000-`  
 **Specification Version:** v1.0 Production  
-**Package:** `com.nutorrent.app.*`  
+**Package:** `com.nutorrent.*`  
 
 ---
 
@@ -50,7 +50,7 @@
 │                          Infrastructure & Storage                         │
 │   FileTorrentStorage (Multi-file Offset Mapping, 15MB Safety Buffer)      │
 │   Raw TCP Sockets • UDP Datagram Sockets • Multicast UDP Socket           │
-│   Android FileProvider (content://com.nutorrent.app.fileprovider)         │
+│   Android FileProvider (content://com.nutorrent.fileprovider)         │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,7 +58,7 @@
 
 ## 2. Layer Boundaries & Modules
 
-### 2.1 Domain & Core (`com.nutorrent.app.core.*`)
+### 2.1 Domain & Core (`com.nutorrent.core.*`)
 - **Domain Models**:
   - `TorrentId`: Strongly-typed 20-byte SHA-1 info-hash wrapper with hex encoding/decoding.
   - `TorrentMetadata`: Immutable metainfo containing piece hashes, file mappings, piece size, total length, announce URLs, and private flags.
@@ -73,7 +73,7 @@
   - Dispatches `Intent.ACTION_VIEW` and `Intent.ACTION_SEND` (Share) intents with `FLAG_GRANT_READ_URI_PERMISSION`, allowing third-party media players and file managers to read completed downloads directly.
 - **Structured Logging (`Lg.kt`)**: Structured, categorized logging tagged by subsystem (`PEER`, `PIECE`, `TRACKER`, `DHT`, `STORAGE`, `ENGINE`, `SERVICE`, `NETWORK`).
 
-### 2.2 Application & Data Layer (`com.nutorrent.app.data.*`)
+### 2.2 Application & Data Layer (`com.nutorrent.data.*`)
 - **Room Database (`NuTorrentDatabase.kt`)**:
   - Entity schema version: **v4**.
   - `TorrentEntity`: Persists info-hash, name, size, piece length, raw metainfo bytes, destination path, state, magnet flag, category, and sequential setting.
@@ -88,7 +88,7 @@
   - Combines database updates, session progress flows, and metadata fetcher states into a unified `Flow<List<TorrentUiModel>>`.
   - Handles addition of `.torrent` files and `magnet:` links, state transitions (pause, resume, force recheck, queue move, delete).
 
-### 2.3 Storage Engine (`com.nutorrent.app.data.storage.FileTorrentStorage`)
+### 2.3 Storage Engine (`com.nutorrent.data.storage.FileTorrentStorage`)
 - **Multi-File Byte Boundary Mapping**:
   - Maps global torrent byte offsets `[offset, offset + length)` across multiple discrete target files.
   - Automatically calculates which files are touched by any given piece or block slice.
@@ -101,7 +101,7 @@
 - **Fast Recheck Engine**:
   - Verifies existing pieces via parallel SHA-1 hashing, skipping non-existent or empty files.
 
-### 2.4 Torrent Engine Subsystem (`com.nutorrent.app.torrent.*`)
+### 2.4 Torrent Engine Subsystem (`com.nutorrent.torrent.*`)
 - **`TorrentEngine`**:
   - Top-level supervisor controlling global lifecycle, background subsystems (DHT, LPD, Governor, Incoming Server, UPnP), and session registries.
   - Manages active download queue, applying settings for max active downloads and seeds.
@@ -160,7 +160,7 @@ Each active torrent is managed by an isolated `TorrentSession`:
 ### 2.7 OS Integration, Storage Access & Scoped Storage
 - **`FileProvider` Sandboxing**:
   - Declared in `AndroidManifest.xml` with authority `${applicationId}.fileprovider` and path configuration `res/xml/file_paths.xml`.
-  - Maps app-specific external storage (`/Android/data/com.nutorrent.app/files/Downloads/`) and user-selected external storage roots.
+  - Maps app-specific external storage (`/Android/data/com.nutorrent/files/Downloads/`) and user-selected external storage roots.
   - Generates secure content URIs (`content://...`) and attaches `FLAG_GRANT_READ_URI_PERMISSION`, completely overcoming Android 11+ (API 30+) Scoped Storage restrictions for external media players (VLC, MX Player, Google Photos).
 - **Multi-File & Folder Viewing**:
   - Provides 1-tap "Open File" for single-file and primary media files in multi-file torrents.

@@ -2,7 +2,7 @@
 ## End-to-End Magnet Resolution, DHT Swarm Discovery & Production Hardening
 
 **Project:** NuTorrent  
-**Package:** `com.nutorrent.app`  
+**Package:** `com.nutorrent`  
 **Status:** Complete & Verified  
 **Date:** October 2026  
 

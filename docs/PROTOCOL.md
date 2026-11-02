@@ -2,7 +2,7 @@
 
 **Client Identifier:** `-NU1000-` (Azureus-style)  
 **Specification Version:** v1.0 Production  
-**Package:** `com.nutorrent.app.torrent.*`  
+**Package:** `com.nutorrent.torrent.*`  
 
 ---
 
@@ -44,7 +44,7 @@ Bencode is the serialization format used for `.torrent` metainfo files, tracker 
   - Maximum recursion nesting depth: **32 levels** (prevents `StackOverflowError`).
   - Maximum string allocation limit: **64 MiB**.
   - Strict validation: leading zeroes (`i03e`), negative zero (`i-0e`), empty integer strings (`ie`), and integer overflow trigger `BencodeException`.
-- **Implementation**: [`BencodeDecoder.kt`](file:///e:/Github/Torrent/app/src/main/java/com/nutorrent/app/torrent/bencode/BencodeDecoder.kt), [`BencodeEncoder.kt`](file:///e:/Github/Torrent/app/src/main/java/com/nutorrent/app/torrent/bencode/BencodeEncoder.kt).
+- **Implementation**: [`BencodeDecoder.kt`](file:///e:/Github/Torrent/app/src/main/java/com/nutorrent/torrent/bencode/BencodeDecoder.kt), [`BencodeEncoder.kt`](file:///e:/Github/Torrent/app/src/main/java/com/nutorrent/torrent/bencode/BencodeEncoder.kt).
 
 ### 3.2 Info Hash Extraction
 - Info hashes are 20-byte SHA-1 digests of the bencoded `info` dictionary.

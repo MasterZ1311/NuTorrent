@@ -2,7 +2,7 @@
 ## Magnet Links, Mainline DHT, UDP Trackers, PEX, Seeding & Advanced Engine
 
 **Date:** October 2026  
-**Application:** NuTorrent (`com.nutorrent.app`)  
+**Application:** NuTorrent (`com.nutorrent`)  
 **Status:** All Iteration 2 systems implemented, tested, and passing with 100% test coverage.
 
 ---

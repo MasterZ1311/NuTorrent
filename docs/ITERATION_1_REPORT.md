@@ -99,15 +99,15 @@ All 18 tests across 6 test suites passed:
 
 ## 4. Key Implementation Files
 
-- Bencode: `app/src/main/java/com/nutorrent/app/torrent/bencode/BencodeDecoder.kt`, `BencodeEncoder.kt`, `BencodeElement.kt`
-- Metainfo: `app/src/main/java/com/nutorrent/app/torrent/metainfo/MetainfoParser.kt`
-- Tracker: `app/src/main/java/com/nutorrent/app/torrent/tracker/HttpTrackerClient.kt`, `PeerIdGenerator.kt`
-- Peer Wire: `app/src/main/java/com/nutorrent/app/torrent/peer/PeerWireProtocol.kt`, `PeerWireCodec.kt`, `PeerConnection.kt`, `PeerConnectionManager.kt`
-- Piece & Download: `app/src/main/java/com/nutorrent/app/torrent/piece/PieceDownloader.kt`, `PieceScheduler.kt`, `PieceManager.kt`, `TorrentSession.kt`, `SpeedCalculator.kt`, `TorrentEngine.kt`
-- Storage: `app/src/main/java/com/nutorrent/app/data/storage/TorrentStorage.kt`
-- Persistence: `app/src/main/java/com/nutorrent/app/data/database/NuTorrentDatabase.kt`, `TorrentDao.kt`, `Entities.kt`, `TorrentRepository.kt`
-- Service: `app/src/main/java/com/nutorrent/app/service/TorrentDownloadService.kt`
-- UI: `app/src/main/java/com/nutorrent/app/ui/MainActivity.kt`, `HomeScreen.kt`, `AddTorrentScreen.kt`, `TorrentDetailsScreen.kt`, `SettingsScreen.kt`
+- Bencode: `app/src/main/java/com/nutorrent/torrent/bencode/BencodeDecoder.kt`, `BencodeEncoder.kt`, `BencodeElement.kt`
+- Metainfo: `app/src/main/java/com/nutorrent/torrent/metainfo/MetainfoParser.kt`
+- Tracker: `app/src/main/java/com/nutorrent/torrent/tracker/HttpTrackerClient.kt`, `PeerIdGenerator.kt`
+- Peer Wire: `app/src/main/java/com/nutorrent/torrent/peer/PeerWireProtocol.kt`, `PeerWireCodec.kt`, `PeerConnection.kt`, `PeerConnectionManager.kt`
+- Piece & Download: `app/src/main/java/com/nutorrent/torrent/piece/PieceDownloader.kt`, `PieceScheduler.kt`, `PieceManager.kt`, `TorrentSession.kt`, `SpeedCalculator.kt`, `TorrentEngine.kt`
+- Storage: `app/src/main/java/com/nutorrent/data/storage/TorrentStorage.kt`
+- Persistence: `app/src/main/java/com/nutorrent/data/database/NuTorrentDatabase.kt`, `TorrentDao.kt`, `Entities.kt`, `TorrentRepository.kt`
+- Service: `app/src/main/java/com/nutorrent/service/TorrentDownloadService.kt`
+- UI: `app/src/main/java/com/nutorrent/ui/MainActivity.kt`, `HomeScreen.kt`, `AddTorrentScreen.kt`, `TorrentDetailsScreen.kt`, `SettingsScreen.kt`
 
 ---
 

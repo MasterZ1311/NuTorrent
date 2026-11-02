@@ -2,7 +2,7 @@
 ## Production Polish, Performance Hardening & Advanced Android Features
 
 **Project:** NuTorrent  
-**Package:** `com.nutorrent.app`  
+**Package:** `com.nutorrent`  
 **Status:** Complete & Verified  
 **Date:** October 2026  
 

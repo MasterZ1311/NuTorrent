@@ -2,7 +2,7 @@
 
 **Client Identifier:** `-NU1000-`  
 **Specification Version:** v1.0 Production  
-**Package:** `com.nutorrent.app`  
+**Package:** `com.nutorrent`  
 
 ---
 
@@ -28,7 +28,7 @@
 ## 2. Source Tree Layout
 
 ```
-app/src/main/java/com/nutorrent/app
+app/src/main/java/com/nutorrent
 │
 ├── core
 │   ├── error          # AppError sealed hierarchy (InvalidTorrent, StorageFull, etc.)
@@ -129,7 +129,7 @@ All migrations are declared in `NuTorrentDatabase.kt` and applied automatically 
 
 ## 6. Structured Logging Subsystems
 
-Logging is routed through `com.nutorrent.app.core.util.Lg` with category filtering:
+Logging is routed through `com.nutorrent.core.util.Lg` with category filtering:
 
 | Category | Typical Events |
 |:---|:---|

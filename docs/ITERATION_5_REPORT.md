@@ -2,7 +2,7 @@
 ## Swarm Acceleration, Inbound Connectability, BEP 6 Fast Extension & In-App File Access
 
 **Project:** NuTorrent  
-**Package:** `com.nutorrent.app`  
+**Package:** `com.nutorrent`  
 **Status:** Complete & Verified  
 **Date:** October 2026  
 
@@ -44,7 +44,7 @@ Iteration 5 completes the transfer performance and post-download user experience
 - **Wi-Fi Scaling**: Automatically increases active peer connection limits from 30 up to 50–60 when connected to unmetered Wi-Fi.
 
 ### 2.5 Android FileProvider & In-App File Access
-- **Scoped Storage Solution**: On Android 11+ (API 30+), system file managers restrict direct browsing of `/Android/data/com.nutorrent.app/files/Downloads/`.
+- **Scoped Storage Solution**: On Android 11+ (API 30+), system file managers restrict direct browsing of `/Android/data/com.nutorrent/files/Downloads/`.
 - **`FileProvider` Setup**: Registered authority `${applicationId}.fileprovider` with `res/xml/file_paths.xml` mapping external files and storage roots.
 - **`FileOpener.kt`**:
   - Dynamically detects MIME types for videos (`.mkv`, `.mp4`, `.avi`), audio (`.mp3`, `.flac`), documents (`.pdf`), and archives.

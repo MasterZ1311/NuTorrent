@@ -2,7 +2,7 @@
 
 **Client Identifier:** `-NU1000-`  
 **Specification Version:** v1.0 Production  
-**Package:** `com.nutorrent.app.torrent.metadata`, `com.nutorrent.app.torrent.dht`  
+**Package:** `com.nutorrent.torrent.metadata`, `com.nutorrent.torrent.dht`  
 
 ---
 
