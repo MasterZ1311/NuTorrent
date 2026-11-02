@@ -15,12 +15,8 @@ The name "NuTorrent" is derived from the Greek letter Nu (v / N), representing f
 ## Launch Showcase
 
 <p align="center">
-  <a href="brag-output/brag.mp4">
-    <img src="brag-output/brag.jpg" alt="NuTorrent Launch Showcase" width="100%" />
-  </a>
+  <img src="docs/assets/nutorrent-showcase.gif" alt="NuTorrent Cyber-Kinetic Showcase" width="100%" />
 </p>
-
-[Watch the NuTorrent Launch Video (MP4)](brag-output/brag.mp4)
 
 ---
 
@@ -284,3 +280,4 @@ For in-depth architectural specifications and implementation guides, refer to th
 ## Legal Notice
 
 NuTorrent is an open-source, lawful peer-to-peer file transfer client intended for downloading open-source software, Linux distribution images, public datasets, and user-owned content. NuTorrent does not host, index, search, or promote copyrighted content. Users are solely responsible for ensuring that their downloads comply with applicable local and international copyright laws.
+
