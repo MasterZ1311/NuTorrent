@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,30 +14,56 @@ android {
     defaultConfig {
         applicationId = "com.nutorrent"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        targetSdk = 36
+        versionCode = 5
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
         create("release") {
-            storeFile = file("nutorrent-release.jks")
-            storePassword = "nutorrentpassword"
-            keyAlias = "nutorrent"
-            keyPassword = "nutorrentpassword"
+            val localProps = Properties()
+            val localFile = rootProject.file("local.properties")
+            if (localFile.exists()) {
+                localFile.inputStream().use { localProps.load(it) }
+            }
+            val keystorePath = System.getenv("KEYSTORE_FILE")
+                ?: (project.findProperty("KEYSTORE_FILE") as? String)
+                ?: localProps.getProperty("KEYSTORE_FILE")
+            val keystoreFile = if (!keystorePath.isNullOrEmpty()) file(keystorePath) else file("nutorrent-release.jks").takeIf { it.exists() }
+            storeFile = keystoreFile
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+                ?: (project.findProperty("KEYSTORE_PASSWORD") as? String)
+                ?: localProps.getProperty("KEYSTORE_PASSWORD") ?: ""
+            keyAlias = System.getenv("KEY_ALIAS")
+                ?: (project.findProperty("KEY_ALIAS") as? String)
+                ?: localProps.getProperty("KEY_ALIAS") ?: "nutorrent"
+            keyPassword = System.getenv("KEY_PASSWORD")
+                ?: (project.findProperty("KEY_PASSWORD") as? String)
+                ?: localProps.getProperty("KEY_PASSWORD") ?: ""
         }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            val releaseSigning = signingConfigs.getByName("release")
+            signingConfig = if (releaseSigning.storeFile?.exists() == true && !releaseSigning.storePassword.isNullOrEmpty()) {
+                releaseSigning
+            } else if (project.hasProperty("allowDebugSigningForRelease")) {
+                signingConfigs.getByName("debug")
+            } else {
+                null
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            ndk {
+                debugSymbolLevel = "SYMBOL_TABLE"
+            }
         }
     }
     compileOptions {

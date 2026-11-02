@@ -10,3 +10,8 @@
 local.properties
 app/build/
 .kotlin/
+*.jks
+*.jks*
+*.keystore
+*.bak
+brag-output/
