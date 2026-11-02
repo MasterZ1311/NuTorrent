@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.nutorrent.app"
+    namespace = "com.nutorrent"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.nutorrent.app"
+        applicationId = "com.nutorrent"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -19,9 +19,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("nutorrent-release.jks")
+            storePassword = "nutorrentpassword"
+            keyAlias = "nutorrent"
+            keyPassword = "nutorrentpassword"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
