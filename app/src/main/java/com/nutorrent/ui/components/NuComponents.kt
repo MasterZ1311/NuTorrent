@@ -1,5 +1,7 @@
 package com.nutorrent.ui.components
 
+import com.nutorrent.ui.theme.*
+
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -76,16 +78,6 @@ import com.nutorrent.core.model.PauseReason
 import com.nutorrent.core.model.PieceState
 import com.nutorrent.core.model.TorrentState
 import com.nutorrent.core.util.FormatUtils
-import com.nutorrent.ui.theme.NuError
-import com.nutorrent.ui.theme.NuGlassBorder
-import com.nutorrent.ui.theme.NuGlassCard
-import com.nutorrent.ui.theme.NuGlowCyan
-import com.nutorrent.ui.theme.NuGlowSuccess
-import com.nutorrent.ui.theme.NuNeonPlasma
-import com.nutorrent.ui.theme.NuPrimary
-import com.nutorrent.ui.theme.NuSecondary
-import com.nutorrent.ui.theme.NuSuccess
-import com.nutorrent.ui.theme.NuWarning
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
@@ -93,9 +85,6 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import com.nutorrent.R
-import com.nutorrent.ui.theme.NuCyberEmerald
-import com.nutorrent.ui.theme.NuPrimaryDark
-import com.nutorrent.ui.theme.NuDarkCard
 
 @Composable
 fun StatusBadge(
@@ -964,7 +953,7 @@ fun NuAboutEngineDialog(
                 Text("DISMISS", color = NuPrimary, fontWeight = FontWeight.Bold)
             }
         },
-        containerColor = NuDarkCard
+        containerColor = com.nutorrent.ui.theme.NuDarkCard
     )
 }
 
