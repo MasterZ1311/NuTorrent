@@ -7,6 +7,8 @@ import com.nutorrent.core.model.TorrentMetadata
 import com.nutorrent.torrent.metainfo.MagnetUri
 import com.nutorrent.core.model.TorrentProgress
 import com.nutorrent.core.model.TorrentState
+import com.nutorrent.core.model.AppError
+import com.nutorrent.core.model.PauseReason
 import com.nutorrent.core.util.Lg
 import com.nutorrent.core.util.LogCategory
 import com.nutorrent.data.database.NuTorrentDatabase
@@ -44,13 +46,16 @@ data class TorrentSummaryItem(
     val isMagnet: Boolean = false,
     val uploadedBytes: Long = 0L,
     val sequentialDownload: Boolean = false,
-    val category: String = ""
+    val category: String = "",
+    val error: AppError? = null,
+    val pauseReason: PauseReason = PauseReason.NONE
 )
 
 class TorrentRepository(
     private val context: Context,
     val engine: TorrentEngine,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val settingsRepository: SettingsRepository? = null
 ) {
     private val db = NuTorrentDatabase.getInstance(context)
     private val dao = db.torrentDao()
@@ -84,34 +89,45 @@ class TorrentRepository(
                 val session = sessions.firstOrNull { it.metadata.torrentId == torrentId }
                 val fetcher = fetchers[torrentId]
 
-                val (state, progress) = if (session != null) {
+                val state: TorrentState
+                val progress: TorrentProgress
+                val err: AppError?
+                val pauseReason: PauseReason
+
+                if (session != null) {
                     val sessState = session.state.value
                     if (sessState == TorrentState.SEEDING && entity.state != TorrentState.SEEDING.name) {
                         scope.launch(Dispatchers.IO) {
                             dao.updateState(entity.infoHash, TorrentState.SEEDING.name)
                         }
                     }
-                    Pair(sessState, session.progress.value)
+                    state = sessState
+                    progress = session.progress.value
+                    err = session.lastError.value
+                    pauseReason = session.pauseReason.value
                 } else if (fetcher != null) {
-                    val fetcherProgress = TorrentProgress(
+                    state = TorrentState.FETCHING_METADATA
+                    progress = TorrentProgress(
                         totalBytes = entity.totalLength,
                         totalPieces = entity.piecesCount,
                         connectedPeers = fetcher.connectedPeersCount,
                         totalPeers = fetcher.totalDiscoveredCount
                     )
-                    Pair(TorrentState.FETCHING_METADATA, fetcherProgress)
+                    err = null
+                    pauseReason = PauseReason.NONE
                 } else {
-                    val fallbackState = try {
+                    state = try {
                         TorrentState.valueOf(entity.state)
                     } catch (e: Exception) {
                         TorrentState.PAUSED
                     }
-                    val fallbackProgress = TorrentProgress(
+                    progress = TorrentProgress(
                         totalBytes = entity.totalLength,
                         totalPieces = entity.piecesCount,
-                        verifiedBytes = if (fallbackState == TorrentState.COMPLETED) entity.totalLength else 0L
+                        verifiedBytes = if (state == TorrentState.COMPLETED) entity.totalLength else 0L
                     )
-                    Pair(fallbackState, fallbackProgress)
+                    err = entity.lastError?.let { AppError.UnexpectedError(it) }
+                    pauseReason = PauseReason.NONE
                 }
 
                 TorrentSummaryItem(
@@ -126,7 +142,9 @@ class TorrentRepository(
                     isMagnet = entity.isMagnet,
                     uploadedBytes = if (session != null) session.progress.value.uploadedBytes else entity.uploadedBytes,
                     sequentialDownload = session?.isSequentialDownload ?: entity.sequentialDownload,
-                    category = entity.category
+                    category = entity.category,
+                    error = err,
+                    pauseReason = pauseReason
                 )
             }
         }.collect { items ->
@@ -150,8 +168,7 @@ class TorrentRepository(
                 }
 
                 val metadata = MetainfoParser.parse(entity.rawTorrentBytes)
-                val destDir = File(entity.destinationPath)
-                val storage = FileTorrentStorage(destDir, metadata)
+                val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(context, entity.destinationPath, metadata)
                 val session = engine.createSession(metadata, storage)
                 session.isSequentialDownload = entity.sequentialDownload
 
@@ -168,7 +185,8 @@ class TorrentRepository(
         metadata: TorrentMetadata,
         rawBytes: ByteArray,
         destinationPath: String,
-        autoStart: Boolean = true
+        autoStart: Boolean = true,
+        selectedFileIndices: Set<Int>? = null
     ): TorrentSession = withContext(Dispatchers.IO) {
         val infoHex = metadata.torrentId.hex
 
@@ -203,8 +221,8 @@ class TorrentRepository(
         }
         dao.insertTrackers(trackerEntities)
 
-        val destDir = File(destinationPath)
-        val storage = FileTorrentStorage(destDir, metadata)
+        val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(context, destinationPath, metadata, selectedFileIndices)
+
         val session = engine.createSession(metadata, storage)
 
         if (autoStart) {
@@ -217,7 +235,8 @@ class TorrentRepository(
     suspend fun addMagnetTorrent(
         magnet: MagnetUri,
         destinationPath: String,
-        autoStart: Boolean = true
+        autoStart: Boolean = true,
+        selectedFileIndices: Set<Int>? = null
     ): Unit = withContext(Dispatchers.IO) {
         val infoHex = magnet.torrentId.hex
         val resolvedDestPath = if (destinationPath.isNotBlank()) {
@@ -253,7 +272,16 @@ class TorrentRepository(
         }
 
         if (autoStart) {
-            startMagnetMetadataFetch(magnet.torrentId, magnet.displayName, magnet.trackers, resolvedDestPath, autoStart = true)
+            startMagnetMetadataFetch(
+                torrentId = magnet.torrentId,
+                displayName = magnet.displayName,
+                trackers = magnet.trackers,
+                destinationPath = resolvedDestPath,
+                autoStart = true,
+                peerHints = magnet.peerHints,
+                exactSources = magnet.exactSources,
+                selectedFileIndices = selectedFileIndices
+            )
         }
     }
 
@@ -262,11 +290,16 @@ class TorrentRepository(
         displayName: String?,
         trackers: List<String>,
         destinationPath: String,
-        autoStart: Boolean
+        autoStart: Boolean,
+        peerHints: List<String> = emptyList(),
+        exactSources: List<String> = emptyList(),
+        selectedFileIndices: Set<Int>? = null
     ) {
         engine.startMetadataFetch(
             torrentId = torrentId,
             trackers = trackers,
+            peerHints = peerHints,
+            exactSources = exactSources,
             onResolved = { metadata, fullTorrentBytes ->
                 val infoHex = torrentId.hex
                 dao.updateMetadataForMagnet(
@@ -301,8 +334,8 @@ class TorrentRepository(
                     dao.insertTrackers(trackerEntities)
                 }
 
-                val destDir = File(destinationPath)
-                val storage = FileTorrentStorage(destDir, metadata)
+                val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(context, destinationPath, metadata, selectedFileIndices)
+        
                 val session = engine.createSession(metadata, storage)
 
                 if (autoStart) {
@@ -369,4 +402,16 @@ class TorrentRepository(
     }
 
     fun getSession(torrentId: TorrentId): TorrentSession? = engine.getSession(torrentId)
+
+    fun getFilesForTorrentFlow(infoHash: String): Flow<List<TorrentFileEntity>> = dao.getFilesForTorrentFlow(infoHash)
+
+    suspend fun updateTorrentDestination(torrentId: TorrentId, newDestination: String) = withContext(Dispatchers.IO) {
+        dao.updateDestinationPath(torrentId.hex, newDestination)
+        val session = engine.getSession(torrentId)
+        if (session != null) {
+            val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(context, newDestination, session.metadata)
+            session.storage = storage
+            session.uploadManager.storage = storage
+        }
+    }
 }

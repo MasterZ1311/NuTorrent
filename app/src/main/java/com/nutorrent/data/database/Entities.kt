@@ -21,7 +21,11 @@ data class TorrentEntity(
     val priority: Int = 0,
     val selectedFiles: String = "",
     val sequentialDownload: Boolean = false,
-    val category: String = ""
+    val category: String = "",
+    val lastError: String? = null,
+    val completedPieces: Int = 0,
+    val verifiedBytes: Long = 0L,
+    val isCompleted: Boolean = false
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

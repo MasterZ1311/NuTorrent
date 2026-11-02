@@ -34,6 +34,9 @@ interface TorrentDao {
     @Query("SELECT * FROM torrent_files WHERE torrentInfoHash = :infoHash ORDER BY fileIndex ASC")
     suspend fun getFilesForTorrent(infoHash: String): List<TorrentFileEntity>
 
+    @Query("SELECT * FROM torrent_files WHERE torrentInfoHash = :infoHash ORDER BY fileIndex ASC")
+    fun getFilesForTorrentFlow(infoHash: String): Flow<List<TorrentFileEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTrackers(trackers: List<TrackerEntity>)
 
@@ -55,6 +58,12 @@ interface TorrentDao {
     @Query("UPDATE torrents SET category = :category WHERE infoHash = :infoHash")
     suspend fun updateCategory(infoHash: String, category: String)
 
+    @Query("UPDATE torrents SET destinationPath = :destinationPath WHERE infoHash = :infoHash")
+    suspend fun updateDestinationPath(infoHash: String, destinationPath: String)
+
+    @Query("UPDATE torrents SET lastError = :error WHERE infoHash = :infoHash")
+    suspend fun updateLastError(infoHash: String, error: String?)
+
     @Query("UPDATE torrents SET name = :name, isMagnet = :isMagnet, totalLength = :totalLength, pieceLength = :pieceLength, piecesCount = :piecesCount, rawTorrentBytes = :rawTorrentBytes, state = :state WHERE infoHash = :infoHash")
     suspend fun updateMetadataForMagnet(
         infoHash: String,
@@ -66,4 +75,10 @@ interface TorrentDao {
         rawTorrentBytes: ByteArray,
         state: String
     )
+
+    @Query("UPDATE torrents SET completedPieces = :completedPieces, verifiedBytes = :verifiedBytes, isCompleted = :isCompleted WHERE infoHash = :infoHash")
+    suspend fun updateProgressCache(infoHash: String, completedPieces: Int, verifiedBytes: Long, isCompleted: Boolean)
+
+    @Query("UPDATE torrents SET state = :state, isCompleted = :isCompleted WHERE infoHash = :infoHash")
+    suspend fun updateStateAndCompletion(infoHash: String, state: String, isCompleted: Boolean)
 }
