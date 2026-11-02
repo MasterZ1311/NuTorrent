@@ -35,6 +35,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nutorrent.core.device.NuHaptics
+import com.nutorrent.core.device.NuSoundFeedback
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,7 +57,7 @@ fun SettingsScreen(
     torrentRepository: com.nutorrent.data.repository.TorrentRepository? = null,
     onBack: () -> Unit
 ) {
-    val settings by settingsRepository.settings.collectAsState()
+    val settings by settingsRepository.settings.collectAsStateWithLifecycle()
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val folderPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -571,6 +574,56 @@ fun SettingsScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(label, fontSize = 14.sp)
                         }
+                    }
+                }
+            }
+
+            // Haptics & Audio Feedback section
+            SettingsSection(title = "HAPTICS & AUDIO FEEDBACK") {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
+                            Text("Tactile Haptics", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                text = "Rich physical micro-vibrations for clicks, transitions, and alerts",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = settings.enableHaptics,
+                            onCheckedChange = { checked ->
+                                settingsRepository.updateSettings(settings.copy(enableHaptics = checked))
+                                if (checked) NuHaptics.click(context)
+                            }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
+                            Text("Synthesized Audio Chimes", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                text = "Futuristic audio chime on torrent download completion and start",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = settings.enableSoundEffects,
+                            onCheckedChange = { checked ->
+                                settingsRepository.updateSettings(settings.copy(enableSoundEffects = checked))
+                                if (checked) NuSoundFeedback.playCompletionChime(context)
+                            }
+                        )
                     }
                 }
             }

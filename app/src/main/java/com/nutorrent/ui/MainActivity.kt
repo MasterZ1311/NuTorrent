@@ -26,15 +26,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nutorrent.NuTorrentApplication
+import com.nutorrent.core.device.NuHaptics
+import com.nutorrent.core.device.NuSoundFeedback
 import com.nutorrent.ui.addtorrent.AddTorrentScreen
 import com.nutorrent.ui.details.TorrentDetailsScreen
 import com.nutorrent.ui.home.HomeScreen
@@ -76,7 +79,7 @@ class MainActivity : ComponentActivity() {
         val settingsRepo = app.settingsRepository
 
         setContent {
-            val userSettings by settingsRepo.settings.collectAsState()
+            val userSettings by settingsRepo.settings.collectAsStateWithLifecycle()
             val isDarkTheme = when (userSettings.themeMode) {
                 "DARK" -> true
                 "LIGHT" -> false
@@ -138,6 +141,7 @@ fun NuTorrentAppNavigation(
     val repository = app.torrentRepository
     val settingsRepo = app.settingsRepository
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
 
@@ -153,6 +157,8 @@ fun NuTorrentAppNavigation(
                         destinationPath = settingsRepo.settings.value.defaultDownloadPath,
                         autoStart = true
                     )
+                    NuHaptics.heavyClick(context)
+                    NuSoundFeedback.playStartBeep(context)
                 }
             } catch (e: Exception) {
                 com.nutorrent.core.util.Lg.e(com.nutorrent.core.util.LogCategory.ENGINE, "Failed parsing magnet link from intent: $uri", e)
@@ -166,6 +172,7 @@ fun NuTorrentAppNavigation(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
+            NuHaptics.click(context)
             currentScreen = Screen.AddTorrent(uri)
         }
     }
@@ -195,68 +202,94 @@ fun NuTorrentAppNavigation(
                     repository = repository,
                     networkStatus = app.networkObserver.networkStatus,
                     onAddTorrentClick = {
+                        NuHaptics.click(context)
                         onOpenTorrentPicker(filePickerLauncher)
                     },
                     onTorrentClick = { torrentId ->
+                        NuHaptics.click(context)
                         currentScreen = Screen.Details(torrentId.hex)
                     },
                     onSettingsClick = {
+                        NuHaptics.tick(context)
                         currentScreen = Screen.Settings
                     },
                     onPauseClick = { torrentId ->
+                        NuHaptics.click(context)
                         scope.launch { repository.pauseTorrent(torrentId) }
                     },
                     onResumeClick = { torrentId ->
+                        NuHaptics.click(context)
+                        NuSoundFeedback.playStartBeep(context)
                         scope.launch { repository.resumeTorrent(torrentId) }
                     },
                     onDeleteClick = { torrentId, deleteFiles ->
+                        NuHaptics.warning(context)
                         scope.launch { repository.deleteTorrent(torrentId, deleteFiles) }
                     }
                 )
             }
             is Screen.AddTorrent -> {
-                BackHandler { currentScreen = Screen.Home }
+                BackHandler {
+                    NuHaptics.tick(context)
+                    currentScreen = Screen.Home
+                }
                 AddTorrentScreen(
                     fileUri = screen.fileUri,
                     repository = repository,
                     settingsRepository = settingsRepo,
                     onStartDownload = {
+                        NuHaptics.heavyClick(context)
+                        NuSoundFeedback.playStartBeep(context)
                         currentScreen = Screen.Home
                     },
                     onCancel = {
+                        NuHaptics.tick(context)
                         currentScreen = Screen.Home
                     }
                 )
             }
             is Screen.Details -> {
-                BackHandler { currentScreen = Screen.Home }
+                BackHandler {
+                    NuHaptics.tick(context)
+                    currentScreen = Screen.Home
+                }
                 TorrentDetailsScreen(
                     infoHashHex = screen.infoHash,
                     repository = repository,
-                    onBack = { currentScreen = Screen.Home },
+                    onBack = {
+                        NuHaptics.tick(context)
+                        currentScreen = Screen.Home
+                    },
                     onPauseClick = { torrentId ->
+                        NuHaptics.click(context)
                         scope.launch { repository.pauseTorrent(torrentId) }
                     },
                     onResumeClick = { torrentId ->
+                        NuHaptics.click(context)
+                        NuSoundFeedback.playStartBeep(context)
                         scope.launch { repository.resumeTorrent(torrentId) }
                     },
                     onDeleteClick = { torrentId, deleteFiles ->
+                        NuHaptics.warning(context)
                         scope.launch {
                             repository.deleteTorrent(torrentId, deleteFiles = deleteFiles)
                             currentScreen = Screen.Home
                         }
                     },
                     onForceRecheckClick = { torrentId ->
+                        NuHaptics.click(context)
                         scope.launch {
                             repository.forceRecheck(torrentId)
                         }
                     },
                     onSequentialToggle = { torrentId, enabled ->
+                        NuHaptics.tick(context)
                         scope.launch {
                             repository.setSequentialDownload(torrentId, enabled)
                         }
                     },
                     onCategoryChange = { torrentId, category ->
+                        NuHaptics.tick(context)
                         scope.launch {
                             repository.setCategory(torrentId, category)
                         }
@@ -264,11 +297,17 @@ fun NuTorrentAppNavigation(
                 )
             }
             is Screen.Settings -> {
-                BackHandler { currentScreen = Screen.Home }
+                BackHandler {
+                    NuHaptics.tick(context)
+                    currentScreen = Screen.Home
+                }
                 SettingsScreen(
                     settingsRepository = settingsRepo,
                     torrentRepository = repository,
-                    onBack = { currentScreen = Screen.Home }
+                    onBack = {
+                        NuHaptics.tick(context)
+                        currentScreen = Screen.Home
+                    }
                 )
             }
         }

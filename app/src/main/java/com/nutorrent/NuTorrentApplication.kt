@@ -77,6 +77,8 @@ class NuTorrentApplication : Application() {
         appScope.launch(Dispatchers.IO) {
             try {
                 com.nutorrent.torrent.tracker.CommunityTrackersSync.syncTrackers()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {}
         }
     }

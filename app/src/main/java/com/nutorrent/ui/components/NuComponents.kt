@@ -10,14 +10,18 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import com.nutorrent.core.model.PauseReason
-import com.nutorrent.core.model.PieceState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -25,8 +29,21 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -35,16 +52,32 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nutorrent.core.device.NuHaptics
+import com.nutorrent.core.model.PauseReason
+import com.nutorrent.core.model.PieceState
 import com.nutorrent.core.model.TorrentState
+import com.nutorrent.core.util.FormatUtils
 import com.nutorrent.ui.theme.NuError
+import com.nutorrent.ui.theme.NuGlassBorder
+import com.nutorrent.ui.theme.NuGlassCard
+import com.nutorrent.ui.theme.NuGlowCyan
+import com.nutorrent.ui.theme.NuGlowSuccess
+import com.nutorrent.ui.theme.NuNeonPlasma
 import com.nutorrent.ui.theme.NuPrimary
 import com.nutorrent.ui.theme.NuSecondary
 import com.nutorrent.ui.theme.NuSuccess
@@ -96,6 +129,7 @@ fun StatusBadge(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
             .background(bgColor)
+            .border(0.5.dp, textColor.copy(alpha = 0.25f), RoundedCornerShape(6.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
         Box(
@@ -145,14 +179,14 @@ fun PieceProgressBar(
         label = "progressColor"
     )
 
-    // Throughput-coupled shimmer duration
+    // Throughput-coupled shimmer duration: fast on 5G/gigabit, gentle on trickle
     val durationMillis = remember(downloadSpeedBps, isActive) {
         if (!isActive) 3500
         else when {
-            downloadSpeedBps > 10_000_000 -> 500   // High throughput (>10 MB/s)
-            downloadSpeedBps > 2_000_000  -> 900   // Medium-high (>2 MB/s)
-            downloadSpeedBps > 200_000    -> 1600  // Moderate (>200 KB/s)
-            else                          -> 2800  // Trickle
+            downloadSpeedBps > 10_000_000 -> 450   // High throughput (>10 MB/s)
+            downloadSpeedBps > 2_000_000  -> 850   // Medium-high (>2 MB/s)
+            downloadSpeedBps > 200_000    -> 1500  // Moderate (>200 KB/s)
+            else                          -> 2600  // Trickle
         }
     }
 
@@ -168,10 +202,10 @@ fun PieceProgressBar(
     )
 
     val sparkAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.35f,
+        initialValue = 0.40f,
         targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
-            animation = tween(650),
+            animation = tween(600),
             repeatMode = RepeatMode.Reverse
         ),
         label = "sparkAlpha"
@@ -179,9 +213,9 @@ fun PieceProgressBar(
 
     Box(
         modifier = modifier
-            .height(7.dp)
+            .height(8.dp)
             .fillMaxWidth()
-            .clip(RoundedCornerShape(3.5.dp))
+            .clip(RoundedCornerShape(4.dp))
             .background(trackColor)
     ) {
         if (animatedProgress > 0f) {
@@ -189,13 +223,13 @@ fun PieceProgressBar(
                 modifier = Modifier
                     .fillMaxHeight()
                     .fillMaxWidth(animatedProgress)
-                    .clip(RoundedCornerShape(3.5.dp))
+                    .clip(RoundedCornerShape(4.dp))
                     .background(
                         if (isActive && !isFinished && targetProgress < 1f) {
                             Brush.horizontalGradient(
                                 colors = listOf(
-                                    animatedColor.copy(alpha = 0.82f),
-                                    Color.White.copy(alpha = 0.55f),
+                                    animatedColor.copy(alpha = 0.85f),
+                                    Color.White.copy(alpha = 0.65f),
                                     animatedColor
                                 ),
                                 startX = shimmerOffset * 500f,
@@ -204,7 +238,7 @@ fun PieceProgressBar(
                         } else {
                             Brush.horizontalGradient(
                                 colors = listOf(
-                                    animatedColor.copy(alpha = 0.92f),
+                                    animatedColor.copy(alpha = 0.95f),
                                     animatedColor
                                 )
                             )
@@ -212,7 +246,7 @@ fun PieceProgressBar(
                     )
             )
 
-            // Leading-edge spark / plasma head on active downloads
+            // Leading-edge plasma head on active downloads
             if (isActive && !isFinished && animatedProgress in 0.02f..0.98f) {
                 Box(
                     modifier = Modifier
@@ -222,9 +256,9 @@ fun PieceProgressBar(
                     Box(
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
-                            .size(width = 6.dp, height = 7.dp)
-                            .clip(RoundedCornerShape(3.5.dp))
-                            .background(Color.White.copy(alpha = sparkAlpha * 0.85f))
+                            .size(width = 8.dp, height = 8.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color.White.copy(alpha = sparkAlpha * 0.9f))
                     )
                 }
             }
@@ -243,6 +277,7 @@ fun MetricChip(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .border(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
         Icon(
@@ -256,7 +291,6 @@ fun MetricChip(
             text = text,
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium,
-            fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurface
         )
     }
@@ -290,6 +324,7 @@ fun StatItem(
 fun PieceMapView(
     pieceStates: List<PieceState>,
     modifier: Modifier = Modifier,
+    isActive: Boolean = false,
     blockSizeDp: Float = 6f,
     spacingDp: Float = 2f
 ) {
@@ -324,12 +359,27 @@ fun PieceMapView(
         label = "downloadingAlpha"
     )
 
-    androidx.compose.foundation.Canvas(
+    val radarSweepX by if (isActive) {
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(2600, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "radarSweepX"
+        )
+    } else {
+        remember { mutableFloatStateOf(-1f) }
+    }
+
+    Canvas(
         modifier = modifier
             .fillMaxWidth()
             .height(140.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
             .padding(8.dp)
     ) {
         val density = this
@@ -358,11 +408,246 @@ fun PieceMapView(
                 PieceState.MISSING -> missingColor
             }
 
-            drawRect(
+            drawRoundRect(
                 color = color,
-                topLeft = androidx.compose.ui.geometry.Offset(x, y),
-                size = androidx.compose.ui.geometry.Size(blockSize, blockSize)
+                topLeft = Offset(x, y),
+                size = Size(blockSize, blockSize),
+                cornerRadius = CornerRadius(2f, 2f)
             )
+        }
+
+        // Radar sweep laser line across active swarm piece maps
+        if (isActive && radarSweepX in 0f..1f) {
+            val sweepPx = radarSweepX * size.width
+            drawLine(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        NuPrimary.copy(alpha = 0.75f),
+                        NuPrimary.copy(alpha = 0.95f),
+                        Color.Transparent
+                    )
+                ),
+                start = Offset(sweepPx, 0f),
+                end = Offset(sweepPx, size.height),
+                strokeWidth = 2.dp.toPx()
+            )
+        }
+    }
+}
+
+/**
+ * Cyber-kinetic live network throughput meter with glowing neon plasma ring.
+ */
+@Composable
+fun NetworkSpeedGauge(
+    downloadSpeedBps: Long,
+    uploadSpeedBps: Long,
+    activeTransfersCount: Int,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "gaugePulse")
+    val pulseGlow by infiniteTransition.animateFloat(
+        initialValue = 0.7f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseGlow"
+    )
+
+    val isActive = downloadSpeedBps > 0 || uploadSpeedBps > 0
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        NuGlassCard,
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                    )
+                )
+            )
+            .border(1.dp, if (isActive) NuGlassBorder.copy(alpha = 0.45f * pulseGlow) else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f), RoundedCornerShape(16.dp))
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            // Download Speed Cluster
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(NuPrimary.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowDownward,
+                        contentDescription = "Download",
+                        tint = NuPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "DOWNLOAD",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        letterSpacing = 0.8.sp
+                    )
+                    Text(
+                        text = FormatUtils.formatSpeed(downloadSpeedBps),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (downloadSpeedBps > 0) NuPrimary else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+
+            // Central Active Transfers Status Indicator
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(if (isActive) NuSuccess.copy(alpha = pulseGlow) else NuSecondary.copy(alpha = 0.5f))
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "$activeTransfersCount active",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // Upload Speed Cluster
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "UPLOAD",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        letterSpacing = 0.8.sp
+                    )
+                    Text(
+                        text = FormatUtils.formatSpeed(uploadSpeedBps),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (uploadSpeedBps > 0) NuSuccess else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(NuSuccess.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowUpward,
+                        contentDescription = "Upload",
+                        tint = NuSuccess,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Animated Contextual Action Bar for Multi-Select Batch Operations.
+ */
+@Composable
+fun BatchActionBar(
+    selectedCount: Int,
+    totalCount: Int,
+    onSelectAll: () -> Unit,
+    onClearSelection: () -> Unit,
+    onPauseSelected: () -> Unit,
+    onResumeSelected: () -> Unit,
+    onDeleteSelected: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .border(1.dp, NuPrimary.copy(alpha = 0.4f), RoundedCornerShape(14.dp)),
+        color = NuGlassCard,
+        tonalElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = {
+                        NuHaptics.tick(context)
+                        onClearSelection()
+                    }
+                ) {
+                    Icon(Icons.Default.Clear, contentDescription = "Cancel selection", tint = MaterialTheme.colorScheme.onSurface)
+                }
+                Text(
+                    text = "$selectedCount selected",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = NuPrimary
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = {
+                        NuHaptics.tick(context)
+                        onSelectAll()
+                    }
+                ) {
+                    Icon(Icons.Default.SelectAll, contentDescription = "Select All", tint = MaterialTheme.colorScheme.onSurface)
+                }
+                IconButton(
+                    onClick = {
+                        NuHaptics.click(context)
+                        onPauseSelected()
+                    }
+                ) {
+                    Icon(Icons.Default.Pause, contentDescription = "Pause selected", tint = NuWarning)
+                }
+                IconButton(
+                    onClick = {
+                        NuHaptics.click(context)
+                        onResumeSelected()
+                    }
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = "Resume selected", tint = NuPrimary)
+                }
+                IconButton(
+                    onClick = {
+                        NuHaptics.warning(context)
+                        onDeleteSelected()
+                    }
+                ) {
+                    Icon(Icons.Default.DeleteOutline, contentDescription = "Delete selected", tint = NuError)
+                }
+            }
         }
     }
 }

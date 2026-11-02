@@ -62,6 +62,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nutorrent.core.device.NuHaptics
+import com.nutorrent.core.device.NuSoundFeedback
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -111,20 +115,20 @@ fun TorrentDetailsScreen(
     onCategoryChange: (TorrentId, String) -> Unit = { _, _ -> }
 ) {
     val torrentId = TorrentId.fromHex(infoHashHex)
-    val torrents by repository.torrentsList.collectAsState()
+    val torrents by repository.torrentsList.collectAsStateWithLifecycle()
     val torrentItem = torrents.firstOrNull { it.torrentId == torrentId }
 
     val session = repository.getSession(torrentId)
-    val sessionState by (session?.state?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.state ?: TorrentState.PAUSED) })
-    val sessionProgress by (session?.progress?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.progress ?: TorrentProgress()) })
-    val sessionError by (session?.lastError?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.error) })
-    val sessionPauseReason by (session?.pauseReason?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.pauseReason ?: com.nutorrent.core.model.PauseReason.NONE) })
-    val peers by (session?.peers?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(emptyList<PeerStateInfo>()) })
-    val trackers by (session?.trackers?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(emptyList<TrackerInfo>()) })
+    val sessionState by (session?.state?.collectAsStateWithLifecycle() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.state ?: TorrentState.PAUSED) })
+    val sessionProgress by (session?.progress?.collectAsStateWithLifecycle() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.progress ?: TorrentProgress()) })
+    val sessionError by (session?.lastError?.collectAsStateWithLifecycle() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.error) })
+    val sessionPauseReason by (session?.pauseReason?.collectAsStateWithLifecycle() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.pauseReason ?: com.nutorrent.core.model.PauseReason.NONE) })
+    val peers by (session?.peers?.collectAsStateWithLifecycle() ?: remember { androidx.compose.runtime.mutableStateOf(emptyList<PeerStateInfo>()) })
+    val trackers by (session?.trackers?.collectAsStateWithLifecycle() ?: remember { androidx.compose.runtime.mutableStateOf(emptyList<TrackerInfo>()) })
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-    val appSettings by ((context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.settings?.collectAsState()
+    val appSettings by ((context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.settings?.collectAsStateWithLifecycle()
         ?: remember { androidx.compose.runtime.mutableStateOf(null) })
     val isSimpleMode = appSettings?.uiMode != "ADVANCED"
     val tabs = remember(isSimpleMode) {
@@ -159,7 +163,7 @@ fun TorrentDetailsScreen(
         }
     }
 
-    val dbFilesEntities by repository.getFilesForTorrentFlow(infoHashHex).collectAsState(initial = emptyList())
+    val dbFilesEntities by repository.getFilesForTorrentFlow(infoHashHex).collectAsStateWithLifecycle(initialValue = emptyList())
     val dbFiles = remember(dbFilesEntities) {
         var currentStart = 0L
         dbFilesEntities.map { entity ->
@@ -181,6 +185,13 @@ fun TorrentDetailsScreen(
     }
     val isComplete = sessionState.isFinished || sessionProgress.progressFraction >= 1f ||
         (torrentItem?.state?.isFinished == true) || ((torrentItem?.progress?.progressFraction ?: 0f) >= 1f)
+
+    LaunchedEffect(isComplete) {
+        if (isComplete) {
+            NuHaptics.celebrate(context)
+            NuSoundFeedback.playCompletionChime(context)
+        }
+    }
 
     if (torrentItem == null) {
         Scaffold(
@@ -1328,6 +1339,7 @@ fun PiecesTab(
 
                 PieceMapView(
                     pieceStates = pieceStates,
+                    isActive = downloading > 0,
                     modifier = Modifier.fillMaxWidth().height(180.dp)
                 )
 

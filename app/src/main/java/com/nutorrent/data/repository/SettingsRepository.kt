@@ -25,6 +25,8 @@ data class UserSettings(
     val schedulerEndHour: Int = 22,
     val schedulerSpeedLimitBps: Long = 512 * 1024L,
     val enableLpd: Boolean = true,
+    val enableHaptics: Boolean = true,
+    val enableSoundEffects: Boolean = true,
     val themeMode: String = "SYSTEM", // "SYSTEM", "LIGHT", "DARK"
     val uiMode: String = "SIMPLE", // "SIMPLE", "ADVANCED"
     val lifetimeDownloadedBytes: Long = 0L,
@@ -61,6 +63,8 @@ class SettingsRepository(context: Context) {
             schedulerEndHour = prefs.getInt("scheduler_end_hour", 22).coerceIn(0, 23),
             schedulerSpeedLimitBps = prefs.getLong("scheduler_speed_limit", 512 * 1024L),
             enableLpd = prefs.getBoolean("enable_lpd", true),
+            enableHaptics = prefs.getBoolean("enable_haptics", true),
+            enableSoundEffects = prefs.getBoolean("enable_sound_effects", true),
             themeMode = prefs.getString("theme_mode", "SYSTEM") ?: "SYSTEM",
             uiMode = prefs.getString("ui_mode", "SIMPLE") ?: "SIMPLE",
             lifetimeDownloadedBytes = prefs.getLong("lifetime_downloaded", 0L),
@@ -88,6 +92,8 @@ class SettingsRepository(context: Context) {
             .putInt("scheduler_end_hour", newSettings.schedulerEndHour)
             .putLong("scheduler_speed_limit", newSettings.schedulerSpeedLimitBps)
             .putBoolean("enable_lpd", newSettings.enableLpd)
+            .putBoolean("enable_haptics", newSettings.enableHaptics)
+            .putBoolean("enable_sound_effects", newSettings.enableSoundEffects)
             .putString("theme_mode", newSettings.themeMode)
             .putString("ui_mode", newSettings.uiMode)
             .putLong("lifetime_downloaded", newSettings.lifetimeDownloadedBytes)

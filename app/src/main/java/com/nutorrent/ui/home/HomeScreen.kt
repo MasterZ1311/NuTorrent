@@ -8,7 +8,17 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.res.painterResource
 import com.nutorrent.R
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nutorrent.core.device.NuHaptics
+import com.nutorrent.core.device.NuSoundFeedback
+import com.nutorrent.ui.components.BatchActionBar
+import com.nutorrent.ui.components.NetworkSpeedGauge
+import com.nutorrent.ui.theme.NuGlassCard
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -88,6 +98,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -144,14 +155,14 @@ fun HomeScreen(
     onResumeClick: (TorrentId) -> Unit,
     onDeleteClick: (TorrentId, Boolean) -> Unit
 ) {
-    val torrents by repository.torrentsList.collectAsState()
+    val torrents by repository.torrentsList.collectAsStateWithLifecycle()
     val currentNetworkStatus by (networkStatus?.collectAsState() ?: androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf(com.nutorrent.torrent.network.NetworkStatus(true, isWifi = true, isCellular = false, isMetered = false))
     })
     val scope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
     val context = androidx.compose.ui.platform.LocalContext.current
-    val appSettings by ((context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.settings?.collectAsState()
+    val appSettings by ((context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.settings?.collectAsStateWithLifecycle()
         ?: remember { androidx.compose.runtime.mutableStateOf(null) })
     val defaultDownloadPath = appSettings?.defaultDownloadPath
         ?: java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "Downloads").absolutePath
@@ -193,11 +204,20 @@ fun HomeScreen(
     var magnetInputText by remember { mutableStateOf("") }
     var magnetParseError by remember { mutableStateOf<String?>(null) }
 
+    var isMultiSelectMode by remember { mutableStateOf(false) }
+    val selectedTorrents = remember { mutableStateListOf<TorrentId>() }
+    var showBatchDeleteDialog by remember { mutableStateOf(false) }
+    var batchDeleteFilesChecked by remember { mutableStateOf(false) }
+
     val downloadingCount = torrents.count { it.state.isActive && it.state != TorrentState.SEEDING }
     val seedingCount = torrents.count { it.state == TorrentState.SEEDING }
     val pausedCount = torrents.count { (it.state == TorrentState.PAUSED || it.state == TorrentState.QUEUED) && it.progress.progressFraction < 1f }
     val completedCount = torrents.count { it.state.isFinished || it.progress.progressFraction >= 1f }
     val errorCount = torrents.count { it.state == TorrentState.ERROR }
+
+    val app = context.applicationContext as? com.nutorrent.NuTorrentApplication
+    val totalDownSpeed by (app?.torrentEngine?.totalDownloadSpeedBps?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) })
+    val totalUpSpeed by (app?.torrentEngine?.totalUploadSpeedBps?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) })
 
     val clipboardText = remember(torrents) {
         try {
@@ -584,11 +604,78 @@ fun HomeScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                if (isMultiSelectMode) {
+                    item(key = "batchActionBar") {
+                        BatchActionBar(
+                            selectedCount = selectedTorrents.size,
+                            totalCount = filteredTorrents.size,
+                            onSelectAll = {
+                                selectedTorrents.clear()
+                                selectedTorrents.addAll(filteredTorrents.map { it.torrentId })
+                            },
+                            onClearSelection = {
+                                selectedTorrents.clear()
+                                isMultiSelectMode = false
+                            },
+                            onPauseSelected = {
+                                val toPause = selectedTorrents.toList()
+                                selectedTorrents.clear()
+                                isMultiSelectMode = false
+                                for (id in toPause) onPauseClick(id)
+                            },
+                            onResumeSelected = {
+                                val toResume = selectedTorrents.toList()
+                                selectedTorrents.clear()
+                                isMultiSelectMode = false
+                                for (id in toResume) onResumeClick(id)
+                            },
+                            onDeleteSelected = {
+                                showBatchDeleteDialog = true
+                            }
+                        )
+                    }
+                } else {
+                    val app = context.applicationContext as? com.nutorrent.NuTorrentApplication
+                    val totalDownSpeed by (app?.torrentEngine?.totalDownloadSpeedBps?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) })
+                    val totalUpSpeed by (app?.torrentEngine?.totalUploadSpeedBps?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) })
+                    if (downloadingCount > 0 || seedingCount > 0 || totalDownSpeed > 0L || totalUpSpeed > 0L) {
+                        item(key = "networkSpeedGauge") {
+                            NetworkSpeedGauge(
+                                downloadSpeedBps = totalDownSpeed,
+                                uploadSpeedBps = totalUpSpeed,
+                                activeTransfersCount = downloadingCount + seedingCount
+                            )
+                        }
+                    }
+                }
+
                 items(filteredTorrents, key = { it.torrentId.hex }) { item ->
                     TorrentCard(
                         item = item,
                         modifier = Modifier.animateItem(),
-                        onClick = { onTorrentClick(item.torrentId) },
+                        isSelected = selectedTorrents.contains(item.torrentId),
+                        isMultiSelectMode = isMultiSelectMode,
+                        onClick = {
+                            if (isMultiSelectMode) {
+                                NuHaptics.tick(context)
+                                if (selectedTorrents.contains(item.torrentId)) {
+                                    selectedTorrents.remove(item.torrentId)
+                                    if (selectedTorrents.isEmpty()) isMultiSelectMode = false
+                                } else {
+                                    selectedTorrents.add(item.torrentId)
+                                }
+                            } else {
+                                NuHaptics.click(context)
+                                onTorrentClick(item.torrentId)
+                            }
+                        },
+                        onLongClick = {
+                            NuHaptics.heavyClick(context)
+                            isMultiSelectMode = true
+                            if (!selectedTorrents.contains(item.torrentId)) {
+                                selectedTorrents.add(item.torrentId)
+                            }
+                        },
                         onPauseClick = { onPauseClick(item.torrentId) },
                         onResumeClick = { onResumeClick(item.torrentId) },
                         onDeleteClick = {
@@ -602,6 +689,52 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    if (showBatchDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteDialog = false },
+            title = { Text("Delete ${selectedTorrents.size} Torrents?") },
+            text = {
+                Column {
+                    Text("Are you sure you want to remove the ${selectedTorrents.size} selected torrent transfers?")
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { batchDeleteFilesChecked = !batchDeleteFilesChecked }
+                    ) {
+                        Checkbox(
+                            checked = batchDeleteFilesChecked,
+                            onCheckedChange = { batchDeleteFilesChecked = it }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Also delete downloaded data from disk", fontSize = 13.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        NuHaptics.warning(context)
+                        val toDelete = selectedTorrents.toList()
+                        selectedTorrents.clear()
+                        isMultiSelectMode = false
+                        showBatchDeleteDialog = false
+                        for (id in toDelete) {
+                            onDeleteClick(id, batchDeleteFilesChecked)
+                        }
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // Add Options Chooser Dialog
@@ -1003,6 +1136,7 @@ fun EmptyHomeState(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun TorrentCard(
     item: TorrentSummaryItem,
     onClick: () -> Unit,
@@ -1012,7 +1146,10 @@ fun TorrentCard(
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
     modifier: Modifier = Modifier,
-    isAdvancedMode: Boolean = false
+    isAdvancedMode: Boolean = false,
+    isSelected: Boolean = false,
+    isMultiSelectMode: Boolean = false,
+    onLongClick: () -> Unit = {}
 ) {
     val isActiveTransfer = item.state.isActive && item.state != TorrentState.PAUSED && item.progress.progressFraction < 1f
     val isFinished = item.state.isFinished || item.progress.progressFraction >= 1f
@@ -1071,13 +1208,16 @@ fun TorrentCard(
                 cameraDistance = 14f * density
             }
             .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
+            .background(if (isSelected) NuGlassCard.copy(alpha = 0.95f) else MaterialTheme.colorScheme.surface)
             .border(
                 1.dp,
-                if (isActiveTransfer) NuPrimary.copy(alpha = activeBorderAlpha) else MaterialTheme.colorScheme.outline,
+                if (isSelected) NuPrimary else if (isActiveTransfer) NuPrimary.copy(alpha = activeBorderAlpha) else MaterialTheme.colorScheme.outline,
                 RoundedCornerShape(12.dp)
             )
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .padding(16.dp)
     ) {
         // Row 1: Name and Badges
@@ -1090,6 +1230,22 @@ fun TorrentCard(
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (isMultiSelectMode) {
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(if (isSelected) NuPrimary else androidx.compose.ui.graphics.Color.Transparent)
+                            .border(2.dp, if (isSelected) NuPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSelected) {
+                            Icon(Icons.Default.Clear, contentDescription = null, tint = androidx.compose.ui.graphics.Color.Black, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+
                 if (isAdvancedMode && item.queuePosition > 0) {
                     Box(
                         modifier = Modifier

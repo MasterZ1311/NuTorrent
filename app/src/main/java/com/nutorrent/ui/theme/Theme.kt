@@ -72,6 +72,7 @@ fun NuTorrentTheme(
 
     MaterialTheme(
         colorScheme = colorScheme,
+        typography = NuTypography,
         content = content
     )
 }
