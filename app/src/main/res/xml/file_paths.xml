@@ -3,5 +3,4 @@
     <external-files-path name="external_files" path="." />
     <files-path name="internal_files" path="." />
     <external-path name="external_storage" path="." />
-    <root-path name="root" path="." />
 </paths>

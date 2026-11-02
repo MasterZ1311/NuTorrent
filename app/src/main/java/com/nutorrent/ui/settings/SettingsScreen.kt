@@ -21,6 +21,7 @@ import com.nutorrent.R
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,12 +56,22 @@ fun SettingsScreen(
 ) {
     val settings by settingsRepository.settings.collectAsState()
 
+    val context = androidx.compose.ui.platform.LocalContext.current
     val folderPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            val path = uri.path ?: uri.toString()
-            settingsRepository.updateSettings(settings.copy(defaultDownloadPath = path))
+            val takeFlags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (e: Exception) {
+                com.nutorrent.core.util.Lg.w(
+                    com.nutorrent.core.util.LogCategory.STORAGE,
+                    "takePersistableUriPermission failed for $uri: ${e.message}"
+                )
+            }
+            settingsRepository.updateSettings(settings.copy(defaultDownloadPath = uri.toString()))
         }
     }
 
@@ -96,19 +107,74 @@ fun SettingsScreen(
                         .padding(16.dp)
                 ) {
                     Text("Default Download Location", fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = settings.defaultDownloadPath,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = com.nutorrent.core.util.FormatUtils.formatStoragePath(settings.defaultDownloadPath),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    androidx.compose.material3.OutlinedButton(
-                        onClick = { folderPickerLauncher.launch(null) },
-                        modifier = Modifier.fillMaxWidth()
+                    val isPrivate = !settings.defaultDownloadPath.startsWith("content://")
+                    if (isPrivate) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Currently using App Private Storage. On Android 11+, external file managers cannot access files here. Pick a custom folder (e.g. Downloads or Movies) so your files are visible to other apps.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 15.sp
+                        )
+                    } else {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Custom SAF Storage: Files are saved directly to your chosen device storage and are accessible by any file manager or media app.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 15.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Change Download Folder", fontSize = 12.sp)
+                        androidx.compose.material3.Button(
+                            onClick = { folderPickerLauncher.launch(null) },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                Icons.Default.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Change Folder (SAF)", fontSize = 12.sp)
+                        }
+                        androidx.compose.material3.OutlinedButton(
+                            onClick = {
+                                com.nutorrent.core.util.FileOpener.openFolder(context, settings.defaultDownloadPath)
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                Icons.Default.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Open Folder", fontSize = 12.sp)
+                        }
+                    }
+                    if (!isPrivate) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                val appPrivatePath = java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "Downloads").absolutePath
+                                settingsRepository.updateSettings(settings.copy(defaultDownloadPath = appPrivatePath))
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Reset to App Private Storage", fontSize = 12.sp)
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -173,7 +239,10 @@ fun SettingsScreen(
                         1024 * 1024L,
                         2 * 1024 * 1024L,
                         5 * 1024 * 1024L,
-                        10 * 1024 * 1024L
+                        10 * 1024 * 1024L,
+                        25 * 1024 * 1024L,
+                        50 * 1024 * 1024L,
+                        100 * 1024 * 1024L
                     )
                     val downIndex = downloadSpeedSteps.indexOfFirst { it >= settings.downloadSpeedLimitBps }.let { if (it < 0) 0 else it }
 
@@ -184,7 +253,11 @@ fun SettingsScreen(
                     ) {
                         Text("Max Download Speed", fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         Text(
-                            text = if (settings.downloadSpeedLimitBps <= 0L) "Unlimited" else "${settings.downloadSpeedLimitBps / 1024} KB/s",
+                            text = when {
+                                settings.downloadSpeedLimitBps <= 0L -> "Unlimited"
+                                settings.downloadSpeedLimitBps >= 1024 * 1024L -> "${settings.downloadSpeedLimitBps / (1024 * 1024)} MB/s"
+                                else -> "${settings.downloadSpeedLimitBps / 1024} KB/s"
+                            },
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -207,7 +280,9 @@ fun SettingsScreen(
                         512 * 1024L,
                         1024 * 1024L,
                         2 * 1024 * 1024L,
-                        5 * 1024 * 1024L
+                        5 * 1024 * 1024L,
+                        10 * 1024 * 1024L,
+                        25 * 1024 * 1024L
                     )
                     val upIndex = uploadSpeedSteps.indexOfFirst { it >= settings.uploadSpeedLimitBps }.let { if (it < 0) 0 else it }
 
@@ -219,7 +294,11 @@ fun SettingsScreen(
                     ) {
                         Text("Max Upload Speed", fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         Text(
-                            text = if (settings.uploadSpeedLimitBps <= 0L) "Unlimited" else "${settings.uploadSpeedLimitBps / 1024} KB/s",
+                            text = when {
+                                settings.uploadSpeedLimitBps <= 0L -> "Unlimited"
+                                settings.uploadSpeedLimitBps >= 1024 * 1024L -> "${settings.uploadSpeedLimitBps / (1024 * 1024)} MB/s"
+                                else -> "${settings.uploadSpeedLimitBps / 1024} KB/s"
+                            },
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -256,7 +335,7 @@ fun SettingsScreen(
                                 settings.copy(maxPeerConnections = it.roundToInt())
                             )
                         },
-                        valueRange = 5f..100f,
+                        valueRange = 10f..200f,
                         steps = 18
                     )
 
@@ -341,7 +420,7 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Pause on Low Battery (< 15%)", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text("Pause on Low Battery", fontSize = 14.sp, fontWeight = FontWeight.Medium)
                             Text(
                                 "Conserve remaining battery until plugged into power",
                                 fontSize = 12.sp,
@@ -352,6 +431,57 @@ fun SettingsScreen(
                             checked = settings.pauseOnLowBattery,
                             onCheckedChange = {
                                 settingsRepository.updateSettings(settings.copy(pauseOnLowBattery = it))
+                            }
+                        )
+                    }
+
+                    if (settings.pauseOnLowBattery) {
+                        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Low Battery Threshold", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    text = "${settings.batteryThresholdPercent}%",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Slider(
+                                value = settings.batteryThresholdPercent.toFloat(),
+                                onValueChange = {
+                                    settingsRepository.updateSettings(
+                                        settings.copy(batteryThresholdPercent = it.roundToInt())
+                                    )
+                                },
+                                valueRange = 5f..50f,
+                                steps = 8
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Download Only While Charging", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                "Pause all transfers whenever device is running on battery",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = settings.downloadOnlyWhileCharging,
+                            onCheckedChange = {
+                                settingsRepository.updateSettings(settings.copy(downloadOnlyWhileCharging = it))
                             }
                         )
                     }
@@ -377,6 +507,42 @@ fun SettingsScreen(
                                 settingsRepository.updateSettings(settings.copy(keepScreenAwake = it))
                             }
                         )
+                    }
+                }
+            }
+
+            // Interface Mode section
+            SettingsSection(title = "INTERFACE MODE") {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    val modes = listOf(
+                        "SIMPLE" to ("Simple (Standard)" to "Minimal view with Overview and Files. Hides raw swarm internals, piece maps, and queue reordering."),
+                        "ADVANCED" to ("Advanced (Power User)" to "Full view with live connected peers, tracker logs, piece bitmap visualizer, and manual queue reordering.")
+                    )
+                    modes.forEach { (mode, pair) ->
+                        val (title, description) = pair
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    settingsRepository.updateSettings(settings.copy(uiMode = mode))
+                                }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            RadioButton(
+                                selected = settings.uiMode == mode,
+                                onClick = {
+                                    settingsRepository.updateSettings(settings.copy(uiMode = mode))
+                                }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 }
             }
@@ -409,48 +575,95 @@ fun SettingsScreen(
                 }
             }
 
-            // About / Legal section
-            SettingsSection(title = "ABOUT") {
+            // Performance Insights section
+            SettingsSection(title = "PERFORMANCE INSIGHTS") {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    val uptimeMs = torrentRepository?.engine?.getSessionUptimeMs() ?: 0L
+                    val uptimeSec = uptimeMs / 1000L
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Session Uptime", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = com.nutorrent.core.util.FormatUtils.formatDuration(uptimeSec),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Lifetime Downloaded", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = com.nutorrent.core.util.FormatUtils.formatBytes(settings.lifetimeDownloadedBytes),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Lifetime Uploaded", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = com.nutorrent.core.util.FormatUtils.formatBytes(settings.lifetimeUploadedBytes),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = com.nutorrent.ui.theme.NuSuccess
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Completed Downloads", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = "${settings.completedTorrentsCount}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            // Privacy Transparency section
+            SettingsSection(title = "PRIVACY TRANSPARENCY") {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "NuTorrent",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Version 1.0.0 (Production Release)",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Fast. Minimal. Private. Transparent.\n\nA modern peer-to-peer torrent client for Android designed for lawful distribution of open-source software, Linux distributions, public datasets, and user-owned media.",
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "Privacy Guarantee",
+                        text = "Local Storage & Analytics",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "• Zero third-party analytics or crash SDKs\n• Zero advertising trackers or hardware IDs\n• Ephemeral SecureRandom peer IDs\n• Fully local Room database",
+                        text = "• 100% Local Database: Torrent records and settings reside exclusively in local SQLite on your device.\n• Zero Telemetry: No Firebase, Crashlytics, or analytics SDKs.\n• No User Accounts: No sign-in, email, advertising IDs, or tracking cookies.",
                         fontSize = 11.sp,
                         lineHeight = 16.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Open Source / Licenses: Apache 2.0 / MIT",
+                        text = "BitTorrent Swarm Transparency",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "• Swarm IP Broadcast: As required by the BitTorrent protocol, your IP address and listening port are shared with connected peers in the swarm and public trackers to coordinate file transfers.\n• Ephemeral Peer IDs: A new cryptographically random peer ID is generated on each session to eliminate long-term swarm tracking.",
                         fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 16.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -468,15 +681,18 @@ fun SettingsScreen(
 
                 val diagText = buildString {
                     appendLine("NuTorrent Diagnostics")
-                    appendLine("App Version: 1.0.0 (Release Candidate)")
+                    appendLine("App Version: 1.0.1 (Production Release)")
                     appendLine("Android OS: Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
                     appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
                     appendLine("Storage: ${settings.defaultDownloadPath}")
+                    appendLine("UI Mode: ${settings.uiMode}")
                     appendLine("Active Torrents: $activeCount / ${torrents.size}")
                     appendLine("Connected Swarm Peers: $totalPeers")
                     appendLine("Max Peer Connections: ${settings.maxPeerConnections}")
                     appendLine("Local Peer Discovery (BEP 14): ${if (settings.enableLpd) "Enabled" else "Disabled"}")
                     appendLine("Wi-Fi Only: ${settings.wifiOnly}")
+                    appendLine("Battery Threshold: ${settings.batteryThresholdPercent}%")
+                    appendLine("Only While Charging: ${settings.downloadOnlyWhileCharging}")
                     appendLine("Theme Mode: ${settings.themeMode}")
                 }
 
@@ -504,34 +720,48 @@ fun SettingsScreen(
                 }
             }
 
-            // About section with brand logo
+            // About section
             SettingsSection(title = "ABOUT") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_app_logo),
-                        contentDescription = "NuTorrent Logo",
-                        modifier = Modifier.size(52.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column {
-                        Text("NuTorrent", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        Text(
-                            text = "Version 1.0.0 Production Release",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_app_logo),
+                            contentDescription = "NuTorrent Logo",
+                            modifier = Modifier.size(48.dp)
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Fast. Minimal. Private. Transparent.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text("NuTorrent", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text(
+                                text = "Version 1.0.1 Production Release",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Fast. Minimal. Private. Transparent.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "A modern peer-to-peer BitTorrent client for Android designed for lawful distribution of open-source software, Linux distributions, public datasets, and user-owned media.",
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Open Source / Licenses: Apache 2.0 / MIT",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

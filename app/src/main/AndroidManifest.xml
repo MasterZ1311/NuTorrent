@@ -35,6 +35,9 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="magnet" />
+                <data android:scheme="thunder" />
+                <data android:scheme="flashget" />
+                <data android:scheme="qqdl" />
             </intent-filter>
 
             <!-- .torrent File Handlers -->
@@ -42,20 +45,28 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/x-bittorrent" />
+                <data android:mimeType="application/x-torrent" />
+                <data android:mimeType="application/torrent" />
+                <data android:mimeType="application/x-magnet" />
+                <data android:mimeType="application/magnet" />
             </intent-filter>
             <intent-filter tools:ignore="AppLinkUrlError">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="content" android:host="*" />
+                <data android:scheme="content" />
+                <data android:host="*" />
                 <data android:mimeType="*/*" />
                 <data android:pathPattern=".*\\.torrent" />
+                <data android:pathPattern=".*\\.magnet" />
             </intent-filter>
             <intent-filter tools:ignore="AppLinkUrlError">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" android:host="*" />
+                <data android:scheme="file" />
+                <data android:host="*" />
                 <data android:mimeType="*/*" />
                 <data android:pathPattern=".*\\.torrent" />
+                <data android:pathPattern=".*\\.magnet" />
             </intent-filter>
 
             <!-- Android Share Handlers -->
@@ -68,6 +79,10 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/x-bittorrent" />
+                <data android:mimeType="application/x-torrent" />
+                <data android:mimeType="application/torrent" />
+                <data android:mimeType="application/x-magnet" />
+                <data android:mimeType="application/magnet" />
                 <data android:mimeType="application/octet-stream" />
             </intent-filter>
         </activity>

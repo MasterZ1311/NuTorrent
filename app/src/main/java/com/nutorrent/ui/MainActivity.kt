@@ -10,6 +10,17 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
@@ -41,8 +52,9 @@ class MainActivity : ComponentActivity() {
         if (intent.data != null) return intent.data
         if (intent.action == android.content.Intent.ACTION_SEND) {
             val text = intent.getStringExtra(android.content.Intent.EXTRA_TEXT)
-            if (!text.isNullOrBlank() && text.trim().startsWith("magnet:", ignoreCase = true)) {
-                return android.net.Uri.parse(text.trim())
+            val decoded = if (!text.isNullOrBlank()) com.nutorrent.core.util.UniversalLinkDecoder.decode(text) else ""
+            if (decoded.startsWith("magnet:", ignoreCase = true) || decoded.startsWith("thunder://", ignoreCase = true)) {
+                return android.net.Uri.parse(decoded)
             }
             val stream = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, android.net.Uri::class.java)
@@ -131,7 +143,8 @@ fun NuTorrentAppNavigation(
 
     LaunchedEffect(incomingData) {
         val uri = incomingData ?: return@LaunchedEffect
-        if (uri.scheme.equals("magnet", ignoreCase = true)) {
+        val uriStr = uri.toString()
+        if (uri.scheme.equals("magnet", ignoreCase = true) || uri.scheme.equals("thunder", ignoreCase = true) || uriStr.startsWith("magnet:", ignoreCase = true) || uriStr.startsWith("thunder://", ignoreCase = true)) {
             try {
                 val magnet = com.nutorrent.torrent.metainfo.MagnetUri.parse(uri.toString())
                 scope.launch {
@@ -157,87 +170,107 @@ fun NuTorrentAppNavigation(
         }
     }
 
-    when (val screen = currentScreen) {
-        is Screen.Home -> {
-            HomeScreen(
-                repository = repository,
-                networkStatus = app.networkObserver.networkStatus,
-                onAddTorrentClick = {
-                    onOpenTorrentPicker(filePickerLauncher)
-                },
-                onTorrentClick = { torrentId ->
-                    currentScreen = Screen.Details(torrentId.hex)
-                },
-                onSettingsClick = {
-                    currentScreen = Screen.Settings
-                },
-                onPauseClick = { torrentId ->
-                    scope.launch { repository.pauseTorrent(torrentId) }
-                },
-                onResumeClick = { torrentId ->
-                    scope.launch { repository.resumeTorrent(torrentId) }
-                },
-                onDeleteClick = { torrentId, deleteFiles ->
-                    scope.launch { repository.deleteTorrent(torrentId, deleteFiles) }
-                }
-            )
-        }
-        is Screen.AddTorrent -> {
-            BackHandler { currentScreen = Screen.Home }
-            AddTorrentScreen(
-                fileUri = screen.fileUri,
-                repository = repository,
-                settingsRepository = settingsRepo,
-                onStartDownload = {
-                    currentScreen = Screen.Home
-                },
-                onCancel = {
-                    currentScreen = Screen.Home
-                }
-            )
-        }
-        is Screen.Details -> {
-            BackHandler { currentScreen = Screen.Home }
-            TorrentDetailsScreen(
-                infoHashHex = screen.infoHash,
-                repository = repository,
-                onBack = { currentScreen = Screen.Home },
-                onPauseClick = { torrentId ->
-                    scope.launch { repository.pauseTorrent(torrentId) }
-                },
-                onResumeClick = { torrentId ->
-                    scope.launch { repository.resumeTorrent(torrentId) }
-                },
-                onDeleteClick = { torrentId, deleteFiles ->
-                    scope.launch {
-                        repository.deleteTorrent(torrentId, deleteFiles = deleteFiles)
+    AnimatedContent(
+        targetState = currentScreen,
+        transitionSpec = {
+            if (targetState is Screen.Details || targetState is Screen.AddTorrent || targetState is Screen.Settings) {
+                (slideInVertically(
+                    initialOffsetY = { it / 5 },
+                    animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow)
+                ) + fadeIn(animationSpec = tween(240))) togetherWith
+                (fadeOut(animationSpec = tween(150)) + scaleOut(targetScale = 0.96f, animationSpec = tween(200)))
+            } else {
+                (fadeIn(animationSpec = tween(240)) + scaleIn(initialScale = 0.96f, animationSpec = tween(200))) togetherWith
+                (slideOutVertically(
+                    targetOffsetY = { it / 5 },
+                    animationSpec = tween(200)
+                ) + fadeOut(animationSpec = tween(150)))
+            }
+        },
+        label = "screenTransitions"
+    ) { screen ->
+        when (screen) {
+            is Screen.Home -> {
+                HomeScreen(
+                    repository = repository,
+                    networkStatus = app.networkObserver.networkStatus,
+                    onAddTorrentClick = {
+                        onOpenTorrentPicker(filePickerLauncher)
+                    },
+                    onTorrentClick = { torrentId ->
+                        currentScreen = Screen.Details(torrentId.hex)
+                    },
+                    onSettingsClick = {
+                        currentScreen = Screen.Settings
+                    },
+                    onPauseClick = { torrentId ->
+                        scope.launch { repository.pauseTorrent(torrentId) }
+                    },
+                    onResumeClick = { torrentId ->
+                        scope.launch { repository.resumeTorrent(torrentId) }
+                    },
+                    onDeleteClick = { torrentId, deleteFiles ->
+                        scope.launch { repository.deleteTorrent(torrentId, deleteFiles) }
+                    }
+                )
+            }
+            is Screen.AddTorrent -> {
+                BackHandler { currentScreen = Screen.Home }
+                AddTorrentScreen(
+                    fileUri = screen.fileUri,
+                    repository = repository,
+                    settingsRepository = settingsRepo,
+                    onStartDownload = {
+                        currentScreen = Screen.Home
+                    },
+                    onCancel = {
                         currentScreen = Screen.Home
                     }
-                },
-                onForceRecheckClick = { torrentId ->
-                    scope.launch {
-                        repository.forceRecheck(torrentId)
+                )
+            }
+            is Screen.Details -> {
+                BackHandler { currentScreen = Screen.Home }
+                TorrentDetailsScreen(
+                    infoHashHex = screen.infoHash,
+                    repository = repository,
+                    onBack = { currentScreen = Screen.Home },
+                    onPauseClick = { torrentId ->
+                        scope.launch { repository.pauseTorrent(torrentId) }
+                    },
+                    onResumeClick = { torrentId ->
+                        scope.launch { repository.resumeTorrent(torrentId) }
+                    },
+                    onDeleteClick = { torrentId, deleteFiles ->
+                        scope.launch {
+                            repository.deleteTorrent(torrentId, deleteFiles = deleteFiles)
+                            currentScreen = Screen.Home
+                        }
+                    },
+                    onForceRecheckClick = { torrentId ->
+                        scope.launch {
+                            repository.forceRecheck(torrentId)
+                        }
+                    },
+                    onSequentialToggle = { torrentId, enabled ->
+                        scope.launch {
+                            repository.setSequentialDownload(torrentId, enabled)
+                        }
+                    },
+                    onCategoryChange = { torrentId, category ->
+                        scope.launch {
+                            repository.setCategory(torrentId, category)
+                        }
                     }
-                },
-                onSequentialToggle = { torrentId, enabled ->
-                    scope.launch {
-                        repository.setSequentialDownload(torrentId, enabled)
-                    }
-                },
-                onCategoryChange = { torrentId, category ->
-                    scope.launch {
-                        repository.setCategory(torrentId, category)
-                    }
-                }
-            )
-        }
-        is Screen.Settings -> {
-            BackHandler { currentScreen = Screen.Home }
-            SettingsScreen(
-                settingsRepository = settingsRepo,
-                torrentRepository = repository,
-                onBack = { currentScreen = Screen.Home }
-            )
+                )
+            }
+            is Screen.Settings -> {
+                BackHandler { currentScreen = Screen.Home }
+                SettingsScreen(
+                    settingsRepository = settingsRepo,
+                    torrentRepository = repository,
+                    onBack = { currentScreen = Screen.Home }
+                )
+            }
         }
     }
 }

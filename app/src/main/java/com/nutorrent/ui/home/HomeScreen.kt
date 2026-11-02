@@ -1,5 +1,8 @@
 package com.nutorrent.ui.home
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -41,9 +44,11 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -67,7 +72,25 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -128,9 +151,30 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
     val context = androidx.compose.ui.platform.LocalContext.current
-    val defaultDownloadPath = remember(context) {
-        (context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.settings?.value?.defaultDownloadPath
-            ?: java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "Downloads").absolutePath
+    val appSettings by ((context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.settings?.collectAsState()
+        ?: remember { androidx.compose.runtime.mutableStateOf(null) })
+    val defaultDownloadPath = appSettings?.defaultDownloadPath
+        ?: java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "Downloads").absolutePath
+
+    var magnetDownloadPath by remember(defaultDownloadPath) {
+        mutableStateOf(defaultDownloadPath)
+    }
+
+    val magnetFolderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (e: Exception) {
+                com.nutorrent.core.util.Lg.w(
+                    com.nutorrent.core.util.LogCategory.STORAGE,
+                    "Failed to persist URI permission for magnet: ${e.message}"
+                )
+            }
+            magnetDownloadPath = uri.toString()
+        }
     }
 
     var selectedCategory by remember { mutableStateOf(TorrentCategory.ALL) }
@@ -331,34 +375,106 @@ fun HomeScreen(
                     }
                 }
 
-                // Clipboard Magnet Detection Banner
-                androidx.compose.animation.AnimatedVisibility(visible = isMagnetInClipboard) {
+                // Clipboard Magnet Detection Banner with Magnetic Flux & Pulse
+                val magnetTransition = rememberInfiniteTransition(label = "magnetFlux")
+                val magnetGlowAlpha by magnetTransition.animateFloat(
+                    initialValue = 0.35f,
+                    targetValue = 0.85f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1100),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "magnetGlow"
+                )
+                val magnetRingScale by magnetTransition.animateFloat(
+                    initialValue = 0.85f,
+                    targetValue = 1.35f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1500, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart
+                    ),
+                    label = "magnetRingScale"
+                )
+                val magnetRingAlpha by magnetTransition.animateFloat(
+                    initialValue = 0.8f,
+                    targetValue = 0.0f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1500, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart
+                    ),
+                    label = "magnetRingAlpha"
+                )
+
+                AnimatedVisibility(
+                    visible = isMagnetInClipboard,
+                    enter = fadeIn(spring(dampingRatio = 0.75f)) + expandVertically(spring(dampingRatio = 0.75f)),
+                    exit = fadeOut(tween(150)) + shrinkVertically(tween(150))
+                ) {
                     androidx.compose.material3.Card(
                         colors = androidx.compose.material3.CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp)
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .border(
+                                1.5.dp,
+                                NuPrimary.copy(alpha = magnetGlowAlpha),
+                                RoundedCornerShape(12.dp)
+                            )
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                Icons.Default.Link,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(24.dp)
-                            )
+                            Box(
+                                modifier = Modifier.size(36.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                // Magnetic expanding flux ring
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .graphicsLayer {
+                                            scaleX = magnetRingScale
+                                            scaleY = magnetRingScale
+                                            alpha = magnetRingAlpha
+                                        }
+                                        .clip(CircleShape)
+                                        .border(1.5.dp, NuPrimary, CircleShape)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(NuPrimary.copy(alpha = 0.2f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Link,
+                                        contentDescription = "Magnet Link",
+                                        tint = NuPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    "Magnet Link in Clipboard",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "Magnet Link Detected",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(NuPrimary)
+                                    )
+                                }
                                 Text(
                                     clipboardText ?: "",
                                     fontSize = 11.sp,
@@ -373,9 +489,10 @@ fun HomeScreen(
                                     magnetInputText = clipboardText ?: ""
                                     showMagnetInputDialog = true
                                 },
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Add", fontSize = 12.sp)
+                                Text("Attract ⚡", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                             Spacer(modifier = Modifier.width(4.dp))
                             IconButton(
@@ -470,6 +587,7 @@ fun HomeScreen(
                 items(filteredTorrents, key = { it.torrentId.hex }) { item ->
                     TorrentCard(
                         item = item,
+                        modifier = Modifier.animateItem(),
                         onClick = { onTorrentClick(item.torrentId) },
                         onPauseClick = { onPauseClick(item.torrentId) },
                         onResumeClick = { onResumeClick(item.torrentId) },
@@ -478,7 +596,8 @@ fun HomeScreen(
                             deleteFilesChecked = false
                         },
                         onMoveUp = { repository.moveUpInQueue(item.torrentId) },
-                        onMoveDown = { repository.moveDownInQueue(item.torrentId) }
+                        onMoveDown = { repository.moveDownInQueue(item.torrentId) },
+                        isAdvancedMode = appSettings?.uiMode == "ADVANCED"
                     )
                 }
             }
@@ -626,6 +745,42 @@ fun HomeScreen(
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Download Location",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
+                                text = FormatUtils.formatStoragePath(magnetDownloadPath),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { magnetFolderPickerLauncher.launch(null) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("Change", fontSize = 11.sp)
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -636,13 +791,14 @@ fun HomeScreen(
                             scope.launch {
                                 repository.addMagnetTorrent(
                                     magnet = mag,
-                                    destinationPath = defaultDownloadPath,
+                                    destinationPath = magnetDownloadPath,
                                     autoStart = true
                                 )
                             }
                             showMagnetInputDialog = false
                             magnetInputText = ""
                             magnetParseError = null
+                            magnetDownloadPath = defaultDownloadPath
                         }
                     },
                     enabled = parsedMagnet != null
@@ -656,6 +812,7 @@ fun HomeScreen(
                         showMagnetInputDialog = false
                         magnetInputText = ""
                         magnetParseError = null
+                        magnetDownloadPath = defaultDownloadPath
                     }
                 ) {
                     Text("Cancel")
@@ -707,6 +864,17 @@ fun EmptyHomeState(
     onAddTorrentClick: () -> Unit,
     onAddMagnetClick: () -> Unit
 ) {
+    val emptyTransition = rememberInfiniteTransition(label = "emptyFloating")
+    val floatOffset by emptyTransition.animateFloat(
+        initialValue = -5f,
+        targetValue = 5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "floatOffset"
+    )
+
     Box(
         modifier = modifier,
         contentAlignment = Alignment.Center
@@ -721,7 +889,9 @@ fun EmptyHomeState(
                 imageVector = Icons.Outlined.CloudDownload,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(64.dp)
+                modifier = Modifier
+                    .size(64.dp)
+                    .graphicsLayer { translationY = floatOffset }
             )
             Spacer(modifier = Modifier.height(12.dp))
             Text(
@@ -841,14 +1011,72 @@ fun TorrentCard(
     onDeleteClick: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isAdvancedMode: Boolean = false
 ) {
+    val isActiveTransfer = item.state.isActive && item.state != TorrentState.PAUSED && item.progress.progressFraction < 1f
+    val isFinished = item.state.isFinished || item.progress.progressFraction >= 1f
+
+    val infiniteTransition = rememberInfiniteTransition(label = "activeCardGlow")
+    val activeBorderAlpha by if (isActiveTransfer) {
+        infiniteTransition.animateFloat(
+            initialValue = 0.25f,
+            targetValue = 0.75f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1100),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "activeBorderAlpha"
+        )
+    } else {
+        remember { mutableFloatStateOf(0f) }
+    }
+
+    var dragTiltX by remember { mutableFloatStateOf(0f) }
+    var dragTiltY by remember { mutableFloatStateOf(0f) }
+
+    val rotX by animateFloatAsState(
+        targetValue = -dragTiltY * 6f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "rotX"
+    )
+    val rotY by animateFloatAsState(
+        targetValue = dragTiltX * 6f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "rotY"
+    )
+
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDrag = { change, dragAmount ->
+                        dragTiltX = (dragTiltX + dragAmount.x / 400f).coerceIn(-1f, 1f)
+                        dragTiltY = (dragTiltY + dragAmount.y / 400f).coerceIn(-1f, 1f)
+                    },
+                    onDragEnd = {
+                        dragTiltX = 0f
+                        dragTiltY = 0f
+                    },
+                    onDragCancel = {
+                        dragTiltX = 0f
+                        dragTiltY = 0f
+                    }
+                )
+            }
+            .graphicsLayer {
+                rotationX = rotX
+                rotationY = rotY
+                cameraDistance = 14f * density
+            }
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+            .border(
+                1.dp,
+                if (isActiveTransfer) NuPrimary.copy(alpha = activeBorderAlpha) else MaterialTheme.colorScheme.outline,
+                RoundedCornerShape(12.dp)
+            )
             .clickable(onClick = onClick)
             .padding(16.dp)
     ) {
@@ -862,7 +1090,7 @@ fun TorrentCard(
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (item.queuePosition > 0) {
+                if (isAdvancedMode && item.queuePosition > 0) {
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
@@ -888,13 +1116,18 @@ fun TorrentCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            StatusBadge(state = item.state)
+            StatusBadge(state = item.state, pauseReason = item.pauseReason)
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Row 2: Progress Bar
-        PieceProgressBar(progress = item.progress.progressFraction)
+        // Row 2: Progress Bar (Animated Speed-Coupled Shimmer)
+        PieceProgressBar(
+            progress = item.progress.progressFraction,
+            downloadSpeedBps = item.progress.downloadSpeedBps,
+            isActive = isActiveTransfer,
+            isFinished = isFinished
+        )
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -917,6 +1150,58 @@ fun TorrentCard(
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.primary
             )
+        }
+
+        // Download Doctor mini-banner on error cards
+        if (item.state == TorrentState.ERROR) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))
+                    .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = item.error?.title ?: "Download Interrupted",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                val errMsg = item.error?.userMessage
+                if (!errMsg.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = errMsg,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    FilledTonalButton(
+                        onClick = onResumeClick,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text(item.error?.actionText ?: "Retry", fontSize = 11.sp)
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -960,11 +1245,11 @@ fun TorrentCard(
                 if (item.state.isFinished || item.progress.progressFraction >= 1f) {
                     IconButton(
                         onClick = {
-                            val target = com.nutorrent.core.util.FileOpener.resolvePrimaryTarget(
-                                item.destinationPath,
+                            com.nutorrent.core.util.FileOpener.openPrimaryTarget(
+                                context = context,
+                                destinationPath = item.destinationPath,
                                 torrentName = item.name
                             )
-                            com.nutorrent.core.util.FileOpener.openFile(context, target)
                         },
                         modifier = Modifier.size(32.dp)
                     ) {
@@ -977,7 +1262,22 @@ fun TorrentCard(
                     }
                 }
 
-                if (item.state == TorrentState.QUEUED) {
+                // Locate / Open Folder button
+                IconButton(
+                    onClick = {
+                        com.nutorrent.core.util.FileOpener.openFolder(context, item.destinationPath)
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = "Locate Folder",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                if (isAdvancedMode && item.state == TorrentState.QUEUED) {
                     IconButton(onClick = onMoveUp, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up", modifier = Modifier.size(16.dp))
                     }
@@ -1001,6 +1301,15 @@ fun TorrentCard(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = "Resume",
                             tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                } else if (item.state == TorrentState.ERROR) {
+                    IconButton(onClick = onResumeClick, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Retry",
+                            tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(18.dp)
                         )
                     }

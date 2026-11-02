@@ -17,11 +17,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import android.content.Intent
+import kotlinx.coroutines.launch
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
+import com.nutorrent.core.model.AppError
+import com.nutorrent.core.model.ErrorAction
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FileOpen
@@ -111,14 +117,70 @@ fun TorrentDetailsScreen(
     val session = repository.getSession(torrentId)
     val sessionState by (session?.state?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.state ?: TorrentState.PAUSED) })
     val sessionProgress by (session?.progress?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.progress ?: TorrentProgress()) })
+    val sessionError by (session?.lastError?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.error) })
+    val sessionPauseReason by (session?.pauseReason?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(torrentItem?.pauseReason ?: com.nutorrent.core.model.PauseReason.NONE) })
     val peers by (session?.peers?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(emptyList<PeerStateInfo>()) })
     val trackers by (session?.trackers?.collectAsState() ?: remember { androidx.compose.runtime.mutableStateOf(emptyList<TrackerInfo>()) })
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val appSettings by ((context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.settings?.collectAsState()
+        ?: remember { androidx.compose.runtime.mutableStateOf(null) })
+    val isSimpleMode = appSettings?.uiMode != "ADVANCED"
+    val tabs = remember(isSimpleMode) {
+        if (isSimpleMode) listOf("Overview", "Files") else listOf("Overview", "Files", "Peers", "Trackers", "Pieces")
+    }
+
     var selectedTabIndex by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Overview", "Files", "Peers", "Trackers", "Pieces")
+    if (selectedTabIndex >= tabs.size) {
+        selectedTabIndex = 0
+    }
 
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var deleteFilesChecked by remember { mutableStateOf(false) }
+
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (e: Exception) {
+                com.nutorrent.core.util.Lg.w(
+                    com.nutorrent.core.util.LogCategory.STORAGE,
+                    "Failed to persist URI permission: ${e.message}"
+                )
+            }
+            scope.launch {
+                repository.updateTorrentDestination(torrentId, uri.toString())
+                onResumeClick(torrentId)
+            }
+        }
+    }
+
+    val dbFilesEntities by repository.getFilesForTorrentFlow(infoHashHex).collectAsState(initial = emptyList())
+    val dbFiles = remember(dbFilesEntities) {
+        var currentStart = 0L
+        dbFilesEntities.map { entity ->
+            val start = currentStart
+            val end = start + entity.length
+            currentStart = end
+            TorrentFile(
+                index = entity.fileIndex,
+                relativePath = entity.relativePath,
+                length = entity.length,
+                startByte = start,
+                endByte = end
+            )
+        }
+    }
+    val effectiveFiles = remember(session?.metadata?.files, dbFiles) {
+        val metaFiles = session?.metadata?.files
+        if (!metaFiles.isNullOrEmpty()) metaFiles else dbFiles
+    }
+    val isComplete = sessionState.isFinished || sessionProgress.progressFraction >= 1f ||
+        (torrentItem?.state?.isFinished == true) || ((torrentItem?.progress?.progressFraction ?: 0f) >= 1f)
 
     if (torrentItem == null) {
         Scaffold(
@@ -193,32 +255,6 @@ fun TorrentDetailsScreen(
                     }
                 },
                 actions = {
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    if (sessionState.isFinished || sessionProgress.progressFraction >= 1f) {
-                        IconButton(onClick = {
-                            val target = com.nutorrent.core.util.FileOpener.resolvePrimaryTarget(
-                                torrentItem.destinationPath,
-                                session?.metadata,
-                                torrentItem.name
-                            )
-                            com.nutorrent.core.util.FileOpener.openFile(context, target)
-                        }) {
-                            Icon(
-                                Icons.Default.FileOpen,
-                                contentDescription = "Open File",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                    if (sessionState.isActive) {
-                        IconButton(onClick = { onPauseClick(torrentId) }) {
-                            Icon(Icons.Default.Pause, contentDescription = "Pause")
-                        }
-                    } else if (sessionState == TorrentState.PAUSED) {
-                        IconButton(onClick = { onResumeClick(torrentId) }) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = "Resume", tint = MaterialTheme.colorScheme.primary)
-                        }
-                    }
                     IconButton(onClick = { onForceRecheckClick(torrentId) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Force Recheck")
                     }
@@ -238,6 +274,48 @@ fun TorrentDetailsScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // Sticky Transfer Summary Card visible across all tabs without scrolling
+            StickyTransferSummaryHeader(
+                torrentItem = torrentItem,
+                sessionState = sessionState,
+                sessionProgress = sessionProgress,
+                sessionError = sessionError,
+                pauseReason = sessionPauseReason,
+                onPauseClick = { onPauseClick(torrentId) },
+                onResumeClick = { onResumeClick(torrentId) },
+                onForceRecheckClick = { onForceRecheckClick(torrentId) },
+                onDeleteClick = { showDeleteConfirmDialog = true },
+                onOpenFileClick = {
+                    com.nutorrent.core.util.FileOpener.openPrimaryTarget(
+                        context = context,
+                        destinationPath = torrentItem.destinationPath,
+                        metadata = session?.metadata,
+                        torrentName = torrentItem.name
+                    )
+                },
+                onFilesTabClick = { selectedTabIndex = 1 },
+                onErrorActionClick = { err ->
+                    when (err.action) {
+                        ErrorAction.CHOOSE_LOCATION -> {
+                            folderPickerLauncher.launch(null)
+                        }
+                        ErrorAction.FORCE_RECHECK -> {
+                            onForceRecheckClick(torrentId)
+                        }
+                        ErrorAction.REANNOUNCE -> {
+                            session?.reannounce()
+                        }
+                        ErrorAction.RETRY,
+                        ErrorAction.CHECK_NETWORK -> {
+                            onResumeClick(torrentId)
+                        }
+                        else -> {
+                            onResumeClick(torrentId)
+                        }
+                    }
+                }
+            )
+
             TabRow(
                 selectedTabIndex = selectedTabIndex,
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -247,17 +325,285 @@ fun TorrentDetailsScreen(
                     Tab(
                         selected = selectedTabIndex == index,
                         onClick = { selectedTabIndex = index },
-                        text = { Text(title, fontWeight = FontWeight.SemiBold) }
+                        text = { Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
                     )
                 }
             }
 
-            when (selectedTabIndex) {
-                0 -> OverviewTab(torrentItem, sessionState, sessionProgress, onSequentialToggle = onSequentialToggle, onCategoryChange = onCategoryChange)
-                1 -> FilesTab(session?.metadata?.files ?: emptyList(), session, destinationPath = torrentItem.destinationPath)
-                2 -> PeersTab(peers)
-                3 -> TrackersTab(trackers, session)
-                4 -> PiecesTab(session?.pieceManager?.getPieceStates() ?: emptyList())
+            Box(modifier = Modifier.weight(1f)) {
+                when (selectedTabIndex) {
+                    0 -> OverviewTab(
+                        item = torrentItem,
+                        state = sessionState,
+                        progress = sessionProgress,
+                        onSequentialToggle = onSequentialToggle,
+                        onCategoryChange = onCategoryChange,
+                        onChangeLocationClick = { folderPickerLauncher.launch(null) },
+                        onViewFilesClick = { selectedTabIndex = 1 }
+                    )
+                    1 -> FilesTab(
+                        files = effectiveFiles,
+                        session = session,
+                        destinationPath = torrentItem.destinationPath,
+                        isTorrentComplete = isComplete,
+                        isFetchingMetadata = sessionState == TorrentState.FETCHING_METADATA
+                    )
+                    2 -> PeersTab(peers)
+                    3 -> TrackersTab(trackers, session)
+                    4 -> PiecesTab(session?.pieceManager?.getPieceStates() ?: emptyList())
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun StickyTransferSummaryHeader(
+    torrentItem: com.nutorrent.data.repository.TorrentSummaryItem,
+    sessionState: TorrentState,
+    sessionProgress: TorrentProgress,
+    sessionError: AppError?,
+    onPauseClick: () -> Unit,
+    onResumeClick: () -> Unit,
+    onForceRecheckClick: () -> Unit,
+    onDeleteClick: () -> Unit,
+    onOpenFileClick: () -> Unit,
+    onFilesTabClick: () -> Unit,
+    onErrorActionClick: (AppError) -> Unit,
+    pauseReason: com.nutorrent.core.model.PauseReason = torrentItem.pauseReason
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        // State Badge & Category row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StatusBadge(state = sessionState, pauseReason = pauseReason)
+            if (torrentItem.category.isNotBlank()) {
+                Text(
+                    text = torrentItem.category.uppercase(),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Speeds Row: Visible immediately without requiring scrolling
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "↓ ${FormatUtils.formatSpeed(sessionProgress.downloadSpeedBps)}",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(20.dp))
+            Text(
+                text = "↑ ${FormatUtils.formatSpeed(sessionProgress.uploadSpeedBps)}",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                color = NuSuccess
+            )
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Swarm Metrics: Connected peers vs total known, and Available seeds
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val peersText = if (sessionProgress.totalPeers > 0) {
+                "Peers: ${sessionProgress.connectedPeers} connected (${sessionProgress.totalPeers} known)"
+            } else {
+                "Peers: ${sessionProgress.connectedPeers} connected"
+            }
+            Text(
+                text = peersText,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            val seedsText = if (sessionProgress.availableSeeds != null) {
+                "Seeds: ${sessionProgress.availableSeeds} available"
+            } else if (sessionProgress.connectedSeeds > 0) {
+                "Seeds: ${sessionProgress.connectedSeeds} connected"
+            } else {
+                "Seeds: —"
+            }
+            Text(
+                text = seedsText,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Progress Bar
+        PieceProgressBar(
+            progress = sessionProgress.progressFraction,
+            downloadSpeedBps = sessionProgress.downloadSpeedBps,
+            isActive = sessionState.isActive && sessionState != TorrentState.PAUSED,
+            isFinished = sessionState.isFinished || sessionProgress.progressFraction >= 1f
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Progress details & ETA
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${FormatUtils.formatPercent(sessionProgress.progressFraction)}  •  ${FormatUtils.formatBytes(sessionProgress.verifiedBytes)} / ${FormatUtils.formatBytes(torrentItem.totalLength)}",
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Medium
+            )
+
+            val etaStr = if (sessionProgress.etaSeconds != null && sessionProgress.etaSeconds > 0) {
+                "ETA: ${FormatUtils.formatDuration(sessionProgress.etaSeconds)}"
+            } else {
+                "ETA: —"
+            }
+            Text(
+                text = etaStr,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Primary Action Buttons Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (sessionState.isActive) {
+                Button(
+                    onClick = onPauseClick,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Pause", fontSize = 12.sp)
+                }
+            } else {
+                Button(
+                    onClick = onResumeClick,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Resume", fontSize = 12.sp)
+                }
+            }
+
+            val isComplete = sessionState.isFinished || sessionProgress.progressFraction >= 1f
+            OutlinedButton(
+                onClick = {
+                    if (isComplete) {
+                        onOpenFileClick()
+                    } else {
+                        onFilesTabClick()
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    if (isComplete) Icons.Default.FileOpen else Icons.Default.Description,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(if (isComplete) "Open" else "Files", fontSize = 12.sp)
+            }
+
+            OutlinedButton(
+                onClick = onForceRecheckClick,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Recheck", fontSize = 12.sp)
+            }
+
+            IconButton(
+                onClick = onDeleteClick,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.DeleteOutline,
+                    contentDescription = "Delete",
+                    tint = NuError
+                )
+            }
+        }
+
+        // Actionable Error Card (answers: What happened? Why? What to do next?)
+        if (sessionState == TorrentState.ERROR || sessionError != null) {
+            val err = sessionError
+            Spacer(modifier = Modifier.height(10.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(NuError.copy(alpha = 0.12f))
+                    .border(1.dp, NuError.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    .padding(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Error, contentDescription = null, tint = NuError, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = err?.title ?: "Download Error",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = NuError
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = err?.userMessage ?: "Download encountered an error and was paused.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    lineHeight = 16.sp
+                )
+                if (err?.actionText != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Button(
+                            onClick = { onErrorActionClick(err) },
+                            colors = ButtonDefaults.buttonColors(containerColor = NuError)
+                        ) {
+                            Text(err.actionText, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
         }
     }
@@ -269,7 +615,9 @@ fun OverviewTab(
     state: TorrentState,
     progress: TorrentProgress,
     onSequentialToggle: (TorrentId, Boolean) -> Unit = { _, _ -> },
-    onCategoryChange: (TorrentId, String) -> Unit = { _, _ -> }
+    onCategoryChange: (TorrentId, String) -> Unit = { _, _ -> },
+    onChangeLocationClick: () -> Unit = {},
+    onViewFilesClick: () -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -298,11 +646,16 @@ fun OverviewTab(
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    StatusBadge(state = state)
+                    StatusBadge(state = state, pauseReason = item.pauseReason)
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
-                PieceProgressBar(progress = progress.progressFraction)
+                PieceProgressBar(
+                    progress = progress.progressFraction,
+                    downloadSpeedBps = progress.downloadSpeedBps,
+                    isActive = state.isActive && state != TorrentState.PAUSED,
+                    isFinished = state.isFinished || progress.progressFraction >= 1f
+                )
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
@@ -354,11 +707,11 @@ fun OverviewTab(
                     ) {
                         Button(
                             onClick = {
-                                val target = com.nutorrent.core.util.FileOpener.resolvePrimaryTarget(
-                                    item.destinationPath,
+                                com.nutorrent.core.util.FileOpener.openPrimaryTarget(
+                                    context = context,
+                                    destinationPath = item.destinationPath,
                                     torrentName = item.name
                                 )
-                                com.nutorrent.core.util.FileOpener.openFile(context, target)
                             },
                             modifier = Modifier.weight(1f)
                         ) {
@@ -368,8 +721,7 @@ fun OverviewTab(
                         }
                         OutlinedButton(
                             onClick = {
-                                val folder = java.io.File(item.destinationPath)
-                                com.nutorrent.core.util.FileOpener.openFolder(context, folder)
+                                com.nutorrent.core.util.FileOpener.openFolder(context, item.destinationPath)
                             },
                             modifier = Modifier.weight(1f)
                         ) {
@@ -516,21 +868,38 @@ fun OverviewTab(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Text("Destination Folder", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(item.destinationPath, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium)
+                Text(
+                    text = FormatUtils.formatStoragePath(item.destinationPath),
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Medium
+                )
+
+                val isPrivateStorage = !item.destinationPath.startsWith("content://")
+                if (isPrivateStorage) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Note: Files saved in App Private Storage are isolated by Android Scoped Storage. Tap 'Change Location' below to pick a public folder (like Downloads or Movies) if you want files accessible directly in your file managers.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 15.sp
+                    )
+                }
+
                 val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
                 val context = androidx.compose.ui.platform.LocalContext.current
                 var copiedPath by remember { mutableStateOf(false) }
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
                         onClick = {
-                            val target = com.nutorrent.core.util.FileOpener.resolvePrimaryTarget(
-                                item.destinationPath,
+                            com.nutorrent.core.util.FileOpener.openPrimaryTarget(
+                                context = context,
+                                destinationPath = item.destinationPath,
                                 torrentName = item.name
                             )
-                            com.nutorrent.core.util.FileOpener.openFile(context, target)
                         },
                         modifier = Modifier.weight(1f)
                     ) {
@@ -540,8 +909,7 @@ fun OverviewTab(
                     }
                     OutlinedButton(
                         onClick = {
-                            val folder = java.io.File(item.destinationPath)
-                            com.nutorrent.core.util.FileOpener.openFolder(context, folder)
+                            com.nutorrent.core.util.FileOpener.openFolder(context, item.destinationPath)
                         },
                         modifier = Modifier.weight(1f)
                     ) {
@@ -550,12 +918,33 @@ fun OverviewTab(
                         Text("Open Folder", fontSize = 12.sp)
                     }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onChangeLocationClick,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Change Location", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = onViewFilesClick,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("View Files", fontSize = 12.sp)
+                    }
+                }
                 OutlinedButton(
                     onClick = {
                         clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(item.destinationPath))
                         copiedPath = true
                     },
-                    modifier = Modifier.padding(top = 4.dp)
+                    modifier = Modifier.padding(top = 8.dp).fillMaxWidth()
                 ) {
                     Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -587,11 +976,50 @@ fun OverviewTab(
 fun FilesTab(
     files: List<com.nutorrent.core.model.TorrentFile>,
     session: com.nutorrent.torrent.download.TorrentSession? = null,
-    destinationPath: String = ""
+    destinationPath: String = "",
+    isTorrentComplete: Boolean = false,
+    isFetchingMetadata: Boolean = false
 ) {
     if (files.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No files information available", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                if (isFetchingMetadata) {
+                    CircularProgressIndicator(modifier = Modifier.size(36.dp), color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Downloading Metadata...",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Connecting to swarm peers to retrieve file names and sizes. Files will appear automatically.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Description,
+                        contentDescription = null,
+                        modifier = Modifier.size(44.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "No files information available",
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
         return
     }
@@ -681,6 +1109,7 @@ fun FilesTab(
                             session = session,
                             priorities = priorities,
                             destinationPath = destinationPath,
+                            isTorrentComplete = isTorrentComplete,
                             isNested = true,
                             onPriorityChanged = { prioritiesVersion++ }
                         )
@@ -694,6 +1123,7 @@ fun FilesTab(
                         session = session,
                         priorities = priorities,
                         destinationPath = destinationPath,
+                        isTorrentComplete = isTorrentComplete,
                         isNested = false,
                         onPriorityChanged = { prioritiesVersion++ }
                     )
@@ -709,15 +1139,16 @@ private fun FileItemRow(
     session: com.nutorrent.torrent.download.TorrentSession?,
     priorities: List<FilePriority>,
     destinationPath: String = "",
+    isTorrentComplete: Boolean = false,
     isNested: Boolean,
     onPriorityChanged: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val priority = if (file.index in priorities.indices) priorities[file.index] else FilePriority.NORMAL
-    val verified = session?.availableVerifiedRange(file.index) ?: 0L
-    val pct = if (file.length > 0) ((verified.toDouble() / file.length.toDouble()) * 100).toInt() else 0
+    val verified = if (isTorrentComplete) file.length else (session?.availableVerifiedRange(file.index) ?: 0L)
+    val pct = if (isTorrentComplete) 100 else if (file.length > 0) ((verified.toDouble() / file.length.toDouble()) * 100).toInt() else 0
     val leafName = file.relativePath.replace('\\', '/').substringAfterLast('/')
-    val isComplete = pct >= 100 && destinationPath.isNotBlank()
+    val isComplete = (pct >= 100 || isTorrentComplete) && destinationPath.isNotBlank()
 
     Row(
         modifier = Modifier
@@ -725,9 +1156,21 @@ private fun FileItemRow(
             .padding(start = if (isNested) 16.dp else 0.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(enabled = isComplete) {
-                val targetFile = java.io.File(destinationPath, file.relativePath)
-                com.nutorrent.core.util.FileOpener.openFile(context, targetFile)
+            .clickable {
+                if (isComplete) {
+                    com.nutorrent.core.util.FileOpener.openFile(
+                        context = context,
+                        destinationPath = destinationPath,
+                        relativePath = file.relativePath,
+                        displayName = leafName
+                    )
+                } else {
+                    android.widget.Toast.makeText(
+                        context,
+                        "File is still downloading ($pct% complete)",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -765,8 +1208,12 @@ private fun FileItemRow(
             if (isComplete) {
                 IconButton(
                     onClick = {
-                        val targetFile = java.io.File(destinationPath, file.relativePath)
-                        com.nutorrent.core.util.FileOpener.openFile(context, targetFile)
+                        com.nutorrent.core.util.FileOpener.openFile(
+                            context = context,
+                            destinationPath = destinationPath,
+                            relativePath = file.relativePath,
+                            displayName = leafName
+                        )
                     },
                     modifier = Modifier.size(28.dp)
                 ) {
@@ -779,8 +1226,27 @@ private fun FileItemRow(
                 }
                 IconButton(
                     onClick = {
-                        val targetFile = java.io.File(destinationPath, file.relativePath)
-                        com.nutorrent.core.util.FileOpener.shareFile(context, targetFile)
+                        com.nutorrent.core.util.FileOpener.openFolder(
+                            context = context,
+                            destinationPath = destinationPath
+                        )
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = "Locate",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        com.nutorrent.core.util.FileOpener.shareFile(
+                            context = context,
+                            destinationPath = destinationPath,
+                            relativePath = file.relativePath
+                        )
                     },
                     modifier = Modifier.size(28.dp)
                 ) {
