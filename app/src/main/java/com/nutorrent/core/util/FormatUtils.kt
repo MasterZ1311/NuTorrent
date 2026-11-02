@@ -63,4 +63,42 @@ object FormatUtils {
     fun formatPeers(connected: Int, total: Int): String {
         return if (total > 0) "$connected ($total)" else "$connected"
     }
+
+    /**
+     * Decodes a URL-encoded URI string into readable text.
+     */
+    fun decodeUriString(uriString: String): String {
+        return try {
+            android.net.Uri.decode(uriString)
+        } catch (e: Exception) {
+            uriString
+        }
+    }
+
+    /**
+     * Formats storage path/URI into a clean human-readable directory name.
+     */
+    fun formatStoragePath(path: String): String {
+        val trimmed = path.trim()
+        if (trimmed.startsWith("content://", ignoreCase = true)) {
+            val uri = android.net.Uri.parse(trimmed)
+            val docId = try {
+                if (android.provider.DocumentsContract.isTreeUri(uri)) {
+                    android.provider.DocumentsContract.getTreeDocumentId(uri)
+                } else uri.lastPathSegment
+            } catch (e: Exception) {
+                uri.lastPathSegment
+            }
+            if (docId != null) {
+                val decoded = decodeUriString(docId)
+                val clean = decoded.replace("primary:", "Internal Storage / ").replace(':', '/')
+                return clean
+            }
+            return "SAF: ${uri.authority ?: "Folder"}"
+        }
+        if (trimmed.contains("/Android/data/com.nutorrent/files")) {
+            return "App Private Storage (Downloads)"
+        }
+        return trimmed
+    }
 }
