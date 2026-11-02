@@ -70,6 +70,9 @@ class TorrentSession(
 
     private fun setState(newState: TorrentState) {
         val changed = synchronized(this) {
+            if (_state.value == TorrentState.PAUSED || _state.value == TorrentState.QUEUED || _state.value == TorrentState.ERROR) {
+                return
+            }
             if (_state.value != newState) {
                 Lg.i(LogCategory.ENGINE, "[TORRENT_STATE] ${metadata.name} -> $newState")
                 _state.value = newState
