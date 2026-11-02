@@ -227,4 +227,34 @@ class FileTorrentStorageTest {
             storage.close()
         }
     }
+
+    @Test
+    fun `test prefix directory traversal attack is rejected`() = runBlocking {
+        val baseDir = tempFolder.newFolder("target_dir")
+        val evilDir = tempFolder.newFolder("target_dir_evil")
+        val evilFile = File(evilDir, "pwned.txt")
+
+        val relativeTraversal = ".." + File.separator + evilDir.name + File.separator + "pwned.txt"
+        val meta = TorrentMetadata(
+            torrentId = TorrentId(ByteArray(20)),
+            name = "prefix_attack",
+            pieceLength = 16384L,
+            totalLength = 100L,
+            piecesCount = 1,
+            pieceHashes = listOf(ByteArray(20)),
+            files = listOf(TorrentFile(0, relativeTraversal, 100L, 0, 100L)),
+            announceList = emptyList()
+        )
+
+        val storage = FileTorrentStorage(baseDir, meta)
+        try {
+            storage.prepare()
+            fail("Expected AppError.StorageSecurityError for prefix directory traversal attempt")
+        } catch (e: com.nutorrent.core.model.AppError.StorageSecurityError) {
+            assertTrue(e.message?.contains("Path traversal rejected") == true)
+        } finally {
+            storage.close()
+        }
+        assertFalse("Evil file should not have been created", evilFile.exists())
+    }
 }
