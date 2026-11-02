@@ -20,13 +20,18 @@ class DhtProtocolTest {
         val contact = DhtContact(id, endpoint)
 
         val compactBytes = contact.toCompactBytes()
-        assertEquals(26, compactBytes.size)
+        assertNotNull(compactBytes)
+        assertEquals(26, compactBytes!!.size)
 
         val parsed = DhtContact.fromCompactBytes(compactBytes)
         assertNotNull(parsed)
         assertEquals(id, parsed!!.id)
         assertEquals("192.168.1.42", parsed.endpoint.ip)
         assertEquals(6881, parsed.endpoint.port)
+
+        // Non-IPv4 endpoints must safely return null rather than crash
+        val ipv6Contact = DhtContact(id, PeerEndpoint("2001:db8::1", 6881))
+        assertNull(ipv6Contact.toCompactBytes())
     }
 
     @Test

@@ -1,8 +1,6 @@
 package com.nutorrent.torrent.piece
 
-import com.nutorrent.core.model.AppError
 import com.nutorrent.core.model.BlockRequest
-import com.nutorrent.core.model.TorrentMetadata
 import com.nutorrent.core.util.Lg
 import com.nutorrent.core.util.LogCategory
 import java.security.MessageDigest
@@ -17,7 +15,9 @@ data class BlockEntry(
 )
 
 /**
- * Manages the downloading, block assembly, and SHA-1 verification of an individual piece.
+ * High-performance Piece Downloader.
+ * Directly streams incoming blocks into a single pre-allocated piece buffer,
+ * avoiding per-block allocations, secondary arraycopy passes, and O(N) block scans.
  */
 class PieceDownloader(
     val pieceIndex: Int,
@@ -31,6 +31,10 @@ class PieceDownloader(
     }
 
     val blocks: List<BlockEntry> = createBlocks()
+    val pieceData: ByteArray = ByteArray(pieceLength)
+    private val requestTimestamps: LongArray = LongArray(blocks.size)
+    private var downloadedCount: Int = 0
+    private var nextUnrequestedIndex: Int = 0
 
     private fun createBlocks(): List<BlockEntry> {
         val list = mutableListOf<BlockEntry>()
@@ -43,14 +47,29 @@ class PieceDownloader(
         return list
     }
 
-    fun isAllBlocksDownloaded(): Boolean = blocks.all { it.isDownloaded }
+    fun isAllBlocksDownloaded(): Boolean = downloadedCount == blocks.size
 
-    fun remainingBlocksCount(): Int = blocks.count { !it.isDownloaded }
+    fun remainingBlocksCount(): Int = blocks.size - downloadedCount
 
     fun getNextUnrequestedBlock(): BlockRequest? {
-        val block = blocks.firstOrNull { !it.isDownloaded && !it.isRequested } ?: return null
-        block.isRequested = true
-        return BlockRequest(pieceIndex, block.offset, block.length)
+        for (i in nextUnrequestedIndex until blocks.size) {
+            val block = blocks[i]
+            if (!block.isDownloaded && !block.isRequested) {
+                block.isRequested = true
+                requestTimestamps[i] = System.currentTimeMillis()
+                nextUnrequestedIndex = i + 1
+                return BlockRequest(pieceIndex, block.offset, block.length)
+            }
+        }
+        for (i in 0 until nextUnrequestedIndex.coerceAtMost(blocks.size)) {
+            val block = blocks[i]
+            if (!block.isDownloaded && !block.isRequested) {
+                block.isRequested = true
+                requestTimestamps[i] = System.currentTimeMillis()
+                return BlockRequest(pieceIndex, block.offset, block.length)
+            }
+        }
+        return null
     }
 
     fun getNextPendingBlockForEndGame(): BlockRequest? {
@@ -58,10 +77,33 @@ class PieceDownloader(
         return BlockRequest(pieceIndex, block.offset, block.length)
     }
 
+    fun getStalledPendingBlock(stalledThresholdMs: Long = 4000L): BlockRequest? {
+        if (remainingBlocksCount() > 2) return null
+        val now = System.currentTimeMillis()
+        for (i in blocks.indices) {
+            val block = blocks[i]
+            if (!block.isDownloaded && block.isRequested && (now - requestTimestamps[i] > stalledThresholdMs)) {
+                return BlockRequest(pieceIndex, block.offset, block.length)
+            }
+        }
+        return null
+    }
+
     fun markBlockRequestFailed(offset: Int) {
-        val block = blocks.firstOrNull { it.offset == offset }
+        val blockIndex = offset / blockSize
+        val block = if (blockIndex in blocks.indices && blocks[blockIndex].offset == offset) {
+            blocks[blockIndex]
+        } else {
+            blocks.firstOrNull { it.offset == offset }
+        }
         if (block != null && !block.isDownloaded) {
             block.isRequested = false
+            if (blockIndex in requestTimestamps.indices) {
+                requestTimestamps[blockIndex] = 0L
+            }
+            if (blockIndex < nextUnrequestedIndex) {
+                nextUnrequestedIndex = blockIndex
+            }
         }
     }
 
@@ -70,7 +112,12 @@ class PieceDownloader(
             Lg.w(LogCategory.PIECE, "Block out of bounds: offset $offset, size ${data.size}, pieceLength $pieceLength")
             return false
         }
-        val block = blocks.firstOrNull { it.offset == offset }
+        val blockIndex = offset / blockSize
+        val block = if (blockIndex in blocks.indices && blocks[blockIndex].offset == offset) {
+            blocks[blockIndex]
+        } else {
+            blocks.firstOrNull { it.offset == offset }
+        }
         if (block == null) {
             Lg.w(LogCategory.PIECE, "No matching block for offset $offset in piece $pieceIndex")
             return false
@@ -80,33 +127,31 @@ class PieceDownloader(
             return false
         }
 
-        block.data = data
-        block.isDownloaded = true
-        block.isRequested = false
+        if (!block.isDownloaded) {
+            System.arraycopy(data, 0, pieceData, offset, data.size)
+            block.data = data
+            block.isDownloaded = true
+            block.isRequested = false
+            downloadedCount++
+        }
         return true
     }
 
     /**
-     * Reconstructs the complete piece and verifies its SHA-1 hash against expectedHash.
-     * Returns the verified byte array if valid, or null if corrupted.
+     * Verifies the complete piece SHA-1 hash against expectedHash.
+     * pieceData is already assembled in-place during addBlock with zero copy overhead.
      */
     fun assembleAndVerify(): ByteArray? {
         if (!isAllBlocksDownloaded()) {
             return null
         }
 
-        val assembled = ByteArray(pieceLength)
-        for (block in blocks) {
-            val bData = block.data ?: return null
-            System.arraycopy(bData, 0, assembled, block.offset, block.length)
-        }
-
         val sha1 = MessageDigest.getInstance("SHA-1")
-        val computedHash = sha1.digest(assembled)
+        val computedHash = sha1.digest(pieceData)
 
         if (MessageDigest.isEqual(computedHash, expectedHash)) {
             Lg.d(LogCategory.PIECE, "[VERIFY] piece=$pieceIndex PASS")
-            return assembled
+            return pieceData
         } else {
             Lg.w(LogCategory.PIECE, "[VERIFY] piece=$pieceIndex FAIL")
             reset()
@@ -115,10 +160,15 @@ class PieceDownloader(
     }
 
     fun reset() {
-        for (block in blocks) {
+        downloadedCount = 0
+        nextUnrequestedIndex = 0
+        for (i in blocks.indices) {
+            val block = blocks[i]
             block.isDownloaded = false
             block.isRequested = false
             block.data = null
+            requestTimestamps[i] = 0L
         }
+        Arrays.fill(pieceData, 0.toByte())
     }
 }

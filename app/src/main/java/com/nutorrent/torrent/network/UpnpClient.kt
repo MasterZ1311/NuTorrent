@@ -222,7 +222,20 @@ object UpnpClient {
             conn.connectTimeout = HTTP_TIMEOUT_MS
             conn.readTimeout = HTTP_TIMEOUT_MS
             if (conn.responseCode == 200) {
-                BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                val maxChars = 512 * 1024
+                val buffer = CharArray(4096)
+                val sb = StringBuilder()
+                BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { reader ->
+                    var total = 0
+                    while (true) {
+                        val read = reader.read(buffer, 0, buffer.size)
+                        if (read == -1) break
+                        total += read
+                        if (total > maxChars) return null
+                        sb.append(buffer, 0, read)
+                    }
+                }
+                sb.toString()
             } else {
                 null
             }

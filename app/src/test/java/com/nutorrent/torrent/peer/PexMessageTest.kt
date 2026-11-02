@@ -49,4 +49,25 @@ class PexMessageTest {
         val parsed = PexMessage.parse(corrupt)
         assertNull(parsed)
     }
+
+    @Test
+    fun `test pex handles ipv6 and malformed ips safely without crashing`() {
+        val ipv6Endpoint = PeerEndpoint("2001:db8::1", 6881)
+        val malformedEndpoint = PeerEndpoint("999.999.999.999.999", 6881)
+        val validEndpoint = PeerEndpoint("1.2.3.4", 80)
+
+        val msg = PexMessage(
+            added = listOf(ipv6Endpoint, malformedEndpoint, validEndpoint),
+            dropped = listOf(ipv6Endpoint)
+        )
+        val bytes = msg.toBencodeBytes()
+        assertNotNull(bytes)
+
+        val parsed = PexMessage.parse(bytes)
+        assertNotNull(parsed)
+        assertEquals(1, parsed!!.added.size)
+        assertEquals("1.2.3.4", parsed.added[0].ip)
+        assertEquals(80, parsed.added[0].port)
+        assertTrue(parsed.dropped.isEmpty())
+    }
 }

@@ -35,7 +35,7 @@ class DhtTransactionManager(
         deferred: CompletableDeferred<KrpcMessage>,
         timeoutMs: Long = defaultTimeoutMs
     ): KrpcMessage? {
-        val txKey = txId.joinToString("") { "%02x".format(it) }
+        val txKey = txId.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
         return try {
             withTimeoutOrNull(timeoutMs) {
                 deferred.await()

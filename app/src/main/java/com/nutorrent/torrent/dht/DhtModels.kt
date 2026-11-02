@@ -13,13 +13,17 @@ data class DhtContact(
     var lastSeen: Long = System.currentTimeMillis(),
     var failedQueries: Int = 0
 ) {
-    fun toCompactBytes(): ByteArray {
+    fun toCompactBytes(): ByteArray? {
+        val parts = endpoint.ip.split(".")
+        if (parts.size != 4) return null
+        val octets = parts.map { it.toIntOrNull() }
+        if (octets.any { it == null || it !in 0..255 }) return null
+
         val buf = ByteBuffer.allocate(26).apply {
             order(ByteOrder.BIG_ENDIAN)
             put(id.bytes)
-            val parts = endpoint.ip.split(".")
-            for (p in parts) {
-                put((p.toInt() and 0xFF).toByte())
+            for (p in octets) {
+                put(p!!.toByte())
             }
             putShort(endpoint.port.toShort())
         }
@@ -53,9 +57,10 @@ data class DhtContact(
         }
 
         fun toCompactNodes(contacts: List<DhtContact>): ByteArray {
-            val buf = ByteBuffer.allocate(contacts.size * 26)
-            for (c in contacts) {
-                buf.put(c.toCompactBytes())
+            val compactList = contacts.mapNotNull { it.toCompactBytes() }
+            val buf = ByteBuffer.allocate(compactList.size * 26)
+            for (bytes in compactList) {
+                buf.put(bytes)
             }
             return buf.array()
         }

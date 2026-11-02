@@ -18,13 +18,32 @@ object MetainfoParser {
     /**
      * Parses raw .torrent bytes into a validated TorrentMetadata object.
      * Extracts exact SHA-1 info hash from the raw info dictionary byte slice.
+     * Supports UTF-8 alternative keys (BEP 47), BOM stripping, and path traversal protection.
      */
     fun parse(torrentBytes: ByteArray): TorrentMetadata {
+        var startIdx = 0
+        if (torrentBytes.size >= 3 &&
+            torrentBytes[0] == 0xEF.toByte() &&
+            torrentBytes[1] == 0xBB.toByte() &&
+            torrentBytes[2] == 0xBF.toByte()
+        ) {
+            startIdx = 3
+        }
+        while (startIdx < torrentBytes.size && (
+            torrentBytes[startIdx] == ' '.code.toByte() ||
+            torrentBytes[startIdx] == '\n'.code.toByte() ||
+            torrentBytes[startIdx] == '\r'.code.toByte() ||
+            torrentBytes[startIdx] == '\t'.code.toByte()
+        )) {
+            startIdx++
+        }
+        val cleanBytes = if (startIdx > 0) torrentBytes.copyOfRange(startIdx, torrentBytes.size) else torrentBytes
+
         val rootElement: BencodeElement
         val infoRange: IntRange?
 
         try {
-            val decoded = BencodeDecoder.decodeWithInfoRange(torrentBytes)
+            val decoded = BencodeDecoder.decodeWithInfoRange(cleanBytes)
             rootElement = decoded.first
             infoRange = decoded.second
         } catch (e: BencodeException) {
@@ -40,7 +59,7 @@ object MetainfoParser {
 
         // 1. Calculate info hash
         val infoBytes: ByteArray = if (infoRange != null) {
-            torrentBytes.sliceArray(infoRange)
+            cleanBytes.sliceArray(infoRange)
         } else {
             // Fallback: canonical bencode encoding of info dictionary
             BencodeEncoder.encode(infoDict)
@@ -51,13 +70,10 @@ object MetainfoParser {
         val torrentId = TorrentId(infoHash)
         Lg.d(LogCategory.METAINFO, "Computed info hash: ${torrentId.hex}")
 
-        // 2. Extract torrent name and sanitize
-        val rawName = infoDict.getString("name")
-            ?: throw AppError.InvalidTorrent("Missing 'name' in info dictionary")
-        val sanitizedName = sanitizePathComponent(rawName)
-        if (sanitizedName.isEmpty()) {
-            throw AppError.InvalidTorrent("Torrent name '$rawName' is invalid or empty after sanitization")
-        }
+        // 2. Extract torrent name and sanitize (prefer BEP 47 name.utf-8)
+        val rawName = infoDict.getString("name.utf-8") ?: infoDict.getString("name")
+            ?: "torrent_${torrentId.hex.take(8)}"
+        val sanitizedName = sanitizePathComponent(rawName).ifEmpty { "torrent_${torrentId.hex.take(8)}" }
 
         // 3. Extract piece length
         val pieceLength = infoDict.getInteger("piece length")
@@ -114,7 +130,8 @@ object MetainfoParser {
                     throw AppError.InvalidTorrent("Negative length in file entry $index: $fileLen")
                 }
 
-                val pathList = fileItem.getList("path")
+                // Prefer BEP 47 path.utf-8
+                val pathList = fileItem.getList("path.utf-8") ?: fileItem.getList("path")
                     ?: throw AppError.InvalidTorrent("Missing 'path' in file entry $index")
                 if (pathList.isEmpty()) {
                     throw AppError.InvalidTorrent("Empty path list in file entry $index")
@@ -124,17 +141,16 @@ object MetainfoParser {
                 // Root folder is sanitizedName
                 pathSegments.add(sanitizedName)
                 for (segmentItem in pathList) {
-                    val segmentStr = (segmentItem as? BencodeElement.BString)?.asUtf8String
-                        ?: throw AppError.InvalidTorrent("Path segment is not a string in file entry $index")
-                    val sanitizedSegment = sanitizePathComponent(segmentStr)
-                    if (sanitizedSegment.isEmpty()) {
-                        throw AppError.InvalidTorrent("Invalid path segment '$segmentStr' in file entry $index")
-                    }
+                    val segmentStr = (segmentItem as? BencodeElement.BString)?.asUtf8String ?: "file_$index"
+                    val sanitizedSegment = sanitizePathComponent(segmentStr).ifEmpty { "part_${pathSegments.size}" }
                     pathSegments.add(sanitizedSegment)
                 }
 
                 val relativePath = pathSegments.joinToString(File.separator)
 
+                if (Long.MAX_VALUE - currentOffset < fileLen) {
+                    throw AppError.InvalidTorrent("Total torrent size overflows Long.MAX_VALUE")
+                }
                 files.add(
                     TorrentFile(
                         index = index,
@@ -185,7 +201,7 @@ object MetainfoParser {
         }
 
         val creationDate = rootElement.getInteger("creation date")
-        val comment = rootElement.getString("comment")
+        val comment = rootElement.getString("comment.utf-8") ?: rootElement.getString("comment")
         val createdBy = rootElement.getString("created by")
         val isPrivate = (infoDict.getInteger("private") ?: 0L) == 1L
 
@@ -215,6 +231,7 @@ object MetainfoParser {
         if (trimmed.isEmpty() || trimmed == "." || trimmed == ".." || trimmed.startsWith("../") || trimmed.contains("/../") || trimmed.endsWith("/..") || trimmed.contains("..")) {
             return ""
         }
+
         // Remove dangerous characters
         val clean = trimmed.replace(Regex("""[/\\:*?"<>|\x00-\x1F]"""), "_")
         if (clean.trim('_').isEmpty() || clean == ".." || clean == ".") {
@@ -245,7 +262,7 @@ object MetainfoParser {
         val infoHash = sha1.digest(infoBytes)
         val torrentId = TorrentId(infoHash)
 
-        val rawName = rootElement.getString("name") ?: torrentId.hex
+        val rawName = rootElement.getString("name.utf-8") ?: rootElement.getString("name") ?: torrentId.hex
         val sanitizedName = sanitizePathComponent(rawName).ifEmpty { torrentId.hex }
 
         val pieceLength = rootElement.getInteger("piece length")
@@ -298,7 +315,7 @@ object MetainfoParser {
                     throw AppError.InvalidTorrent("Negative length in file entry $index: $fileLen")
                 }
 
-                val pathList = fileItem.getList("path")
+                val pathList = fileItem.getList("path.utf-8") ?: fileItem.getList("path")
                     ?: throw AppError.InvalidTorrent("Missing 'path' in file entry $index")
                 if (pathList.isEmpty()) {
                     throw AppError.InvalidTorrent("Empty path list in file entry $index")
@@ -307,12 +324,9 @@ object MetainfoParser {
                 val pathSegments = mutableListOf<String>()
                 pathSegments.add(sanitizedName)
                 for (segmentItem in pathList) {
-                    val segmentStr = (segmentItem as? BencodeElement.BString)?.asUtf8String
-                        ?: throw AppError.InvalidTorrent("Path segment is not a string in file entry $index")
-                    val sanitizedSegment = sanitizePathComponent(segmentStr)
-                    if (sanitizedSegment.isNotEmpty()) {
-                        pathSegments.add(sanitizedSegment)
-                    }
+                    val segmentStr = (segmentItem as? BencodeElement.BString)?.asUtf8String ?: "file_$index"
+                    val sanitizedSegment = sanitizePathComponent(segmentStr).ifEmpty { "part_${pathSegments.size}" }
+                    pathSegments.add(sanitizedSegment)
                 }
 
                 val relativePath = pathSegments.joinToString(File.separator)

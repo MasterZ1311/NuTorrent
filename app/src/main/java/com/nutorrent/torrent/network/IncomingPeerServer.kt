@@ -52,7 +52,7 @@ class IncomingPeerServer(
         for (port in portRange) {
             try {
                 bound = ServerSocket(port)
-                boundPort = port
+                boundPort = bound.localPort
                 break
             } catch (ignored: Exception) {
                 // Port busy, try next

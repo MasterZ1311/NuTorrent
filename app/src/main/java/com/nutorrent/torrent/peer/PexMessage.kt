@@ -17,10 +17,11 @@ data class PexMessage(
     fun toBencodeBytes(): ByteArray {
         val root = linkedMapOf<String, BencodeElement>()
 
-        if (added.isNotEmpty()) {
-            val buf = ByteBuffer.allocate(added.size * 6).apply {
+        val ipv4Added = added.filter { isValidIpv4(it.ip) && it.port in 1..65535 }
+        if (ipv4Added.isNotEmpty()) {
+            val buf = ByteBuffer.allocate(ipv4Added.size * 6).apply {
                 order(ByteOrder.BIG_ENDIAN)
-                for (peer in added) {
+                for (peer in ipv4Added) {
                     val parts = peer.ip.split(".")
                     for (p in parts) put((p.toInt() and 0xFF).toByte())
                     putShort(peer.port.toShort())
@@ -29,10 +30,11 @@ data class PexMessage(
             root["added"] = BencodeElement.BString(buf.array())
         }
 
-        if (dropped.isNotEmpty()) {
-            val buf = ByteBuffer.allocate(dropped.size * 6).apply {
+        val ipv4Dropped = dropped.filter { isValidIpv4(it.ip) && it.port in 1..65535 }
+        if (ipv4Dropped.isNotEmpty()) {
+            val buf = ByteBuffer.allocate(ipv4Dropped.size * 6).apply {
                 order(ByteOrder.BIG_ENDIAN)
-                for (peer in dropped) {
+                for (peer in ipv4Dropped) {
                     val parts = peer.ip.split(".")
                     for (p in parts) put((p.toInt() and 0xFF).toByte())
                     putShort(peer.port.toShort())
@@ -42,6 +44,15 @@ data class PexMessage(
         }
 
         return BencodeEncoder.encode(BencodeElement.BDictionary(root))
+    }
+
+    private fun isValidIpv4(ip: String): Boolean {
+        val parts = ip.split(".")
+        if (parts.size != 4) return false
+        return parts.all {
+            val num = it.toIntOrNull()
+            num != null && num in 0..255
+        }
     }
 
     companion object {

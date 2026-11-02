@@ -405,8 +405,8 @@ class DhtNode(
 
         while (candidates.isNotEmpty() && rounds < 15 && isActive) {
             rounds++
-            // Pick up to alpha = 4 unqueried closest candidates
-            val batch = candidates.filter { it.endpoint !in queried }.take(4)
+            // Pick up to alpha = 8 unqueried closest candidates
+            val batch = candidates.filter { it.endpoint !in queried }.take(8)
             if (batch.isEmpty()) break
 
             for (c in batch) {
@@ -449,10 +449,19 @@ class DhtNode(
         }
     }.flowOn(Dispatchers.IO)
 
+    private fun resolveAddress(ipOrHost: String): InetAddress? {
+        return try {
+            val addrs = InetAddress.getAllByName(ipOrHost)
+            addrs.firstOrNull { it is java.net.Inet4Address } ?: addrs.firstOrNull()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun sendMessage(msg: KrpcMessage, target: PeerEndpoint) {
         try {
             val bytes = msg.toBencodeBytes()
-            val addr = InetAddress.getByName(target.ip)
+            val addr = resolveAddress(target.ip) ?: return
             val packet = DatagramPacket(bytes, bytes.size, addr, target.port)
             socket?.send(packet)
         } catch (e: Exception) {

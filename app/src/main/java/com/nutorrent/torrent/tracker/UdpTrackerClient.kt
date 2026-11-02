@@ -22,7 +22,7 @@ import kotlin.random.Random
  * Performs two-phase connect and announce over DatagramSocket.
  */
 class UdpTrackerClient(
-    private val socketTimeoutMs: Int = 8000
+    private val socketTimeoutMs: Int = 2500
 ) : TrackerClient {
 
     companion object {
@@ -50,9 +50,17 @@ class UdpTrackerClient(
             socket = DatagramSocket()
             socket.soTimeout = socketTimeoutMs
 
-            val serverAddress = InetAddress.getByName(host)
+            val addresses = try {
+                InetAddress.getAllByName(host)
+            } catch (e: Exception) {
+                throw AppError.TrackerFailure(request.trackerUrl, "Host not found: ${e.message}")
+            }
+            // Prefer IPv4 address for BitTorrent UDP trackers to avoid IPv6 dropping on cellular/broadband
+            val serverAddress = addresses.firstOrNull { it is java.net.Inet4Address }
+                ?: addresses.firstOrNull()
+                ?: throw AppError.TrackerFailure(request.trackerUrl, "No IP address for host: $host")
 
-            // Step 1: Connect Phase
+            // Step 1: Connect Phase with retransmission
             val connectTxId = Random.nextInt()
             val connectReqBuffer = ByteBuffer.allocate(16).apply {
                 order(ByteOrder.BIG_ENDIAN)
@@ -67,17 +75,27 @@ class UdpTrackerClient(
                 serverAddress,
                 port
             )
-            socket.send(connectReqPacket)
 
             val connectRespBytes = ByteArray(64)
-            val connectRespPacket = DatagramPacket(connectRespBytes, connectRespBytes.size)
-            socket.receive(connectRespPacket)
+            var connectRespPacket: DatagramPacket? = null
+            for (attempt in 0..1) {
+                try {
+                    socket.send(connectReqPacket)
+                    val p = DatagramPacket(connectRespBytes, connectRespBytes.size)
+                    socket.receive(p)
+                    connectRespPacket = p
+                    break
+                } catch (e: SocketTimeoutException) {
+                    if (attempt == 1) throw e
+                }
+            }
+            val safeConnectPacket = connectRespPacket ?: throw AppError.TrackerTimeout(request.trackerUrl, SocketTimeoutException())
 
-            if (connectRespPacket.length < 16) {
-                throw AppError.TrackerFailure(request.trackerUrl, "Connect response too short: ${connectRespPacket.length} bytes")
+            if (safeConnectPacket.length < 16) {
+                throw AppError.TrackerFailure(request.trackerUrl, "Connect response too short: ${safeConnectPacket.length} bytes")
             }
 
-            val connectRespBuf = ByteBuffer.wrap(connectRespBytes, 0, connectRespPacket.length).apply {
+            val connectRespBuf = ByteBuffer.wrap(connectRespBytes, 0, safeConnectPacket.length).apply {
                 order(ByteOrder.BIG_ENDIAN)
             }
             val connectRespAction = connectRespBuf.getInt()
@@ -88,7 +106,7 @@ class UdpTrackerClient(
             }
 
             if (connectRespAction == ACTION_ERROR) {
-                val errorMsg = String(connectRespBytes, 8, connectRespPacket.length - 8, Charsets.UTF_8)
+                val errorMsg = String(connectRespBytes, 8, safeConnectPacket.length - 8, Charsets.UTF_8)
                 throw AppError.TrackerFailure(request.trackerUrl, "Tracker error: $errorMsg")
             }
 
@@ -98,7 +116,7 @@ class UdpTrackerClient(
 
             val connectionId = connectRespBuf.getLong()
 
-            // Step 2: Announce Phase
+            // Step 2: Announce Phase with retransmission
             val announceTxId = Random.nextInt()
             val announceReqBuf = ByteBuffer.allocate(98).apply {
                 order(ByteOrder.BIG_ENDIAN)
@@ -119,7 +137,7 @@ class UdpTrackerClient(
                 putInt(eventCode)
                 putInt(0) // IP address (0 = default)
                 putInt(Random.nextInt()) // key
-                putInt(100) // num_want (explicitly request up to 100 peers)
+                putInt(200) // num_want (explicitly request up to 200 peers)
                 putShort(request.port.toShort())
             }
 
@@ -129,14 +147,24 @@ class UdpTrackerClient(
                 serverAddress,
                 port
             )
-            socket.send(announceReqPacket)
 
             val announceRespBytes = ByteArray(4096)
-            val announceRespPacket = DatagramPacket(announceRespBytes, announceRespBytes.size)
-            socket.receive(announceRespPacket)
+            var announceRespPacket: DatagramPacket? = null
+            for (attempt in 0..1) {
+                try {
+                    socket.send(announceReqPacket)
+                    val p = DatagramPacket(announceRespBytes, announceRespBytes.size)
+                    socket.receive(p)
+                    announceRespPacket = p
+                    break
+                } catch (e: SocketTimeoutException) {
+                    if (attempt == 1) throw e
+                }
+            }
+            val safeAnnouncePacket = announceRespPacket ?: throw AppError.TrackerTimeout(request.trackerUrl, SocketTimeoutException())
 
-            if (announceRespPacket.length < 20) {
-                throw AppError.TrackerFailure(request.trackerUrl, "Announce response too short: ${announceRespPacket.length} bytes")
+            if (safeAnnouncePacket.length < 20) {
+                throw AppError.TrackerFailure(request.trackerUrl, "Announce response too short: ${safeAnnouncePacket.length} bytes")
             }
 
             val announceRespBuf = ByteBuffer.wrap(announceRespBytes, 0, announceRespPacket.length).apply {

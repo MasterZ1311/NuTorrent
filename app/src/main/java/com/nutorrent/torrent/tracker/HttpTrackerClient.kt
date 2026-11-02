@@ -21,8 +21,8 @@ interface TrackerClient {
 }
 
 class HttpTrackerClient(
-    private val connectTimeoutMs: Int = 10000,
-    private val readTimeoutMs: Int = 15000,
+    private val connectTimeoutMs: Int = 4000,
+    private val readTimeoutMs: Int = 6000,
     private val maxResponseSize: Int = 1024 * 1024 // 1 MiB limit
 ) : TrackerClient {
 
@@ -94,6 +94,7 @@ class HttpTrackerClient(
         sb.append("&downloaded=").append(request.downloaded)
         sb.append("&left=").append(request.left)
         sb.append("&compact=").append(if (request.compact) "1" else "0")
+        sb.append("&numwant=200")
 
         if (request.event != TrackerEvent.REGULAR && request.event.paramValue.isNotEmpty()) {
             sb.append("&event=").append(request.event.paramValue)

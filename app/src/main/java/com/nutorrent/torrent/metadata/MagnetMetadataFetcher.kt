@@ -24,6 +24,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -33,7 +35,9 @@ class MagnetMetadataFetcher(
     private val trackerClient: TrackerClient = DefaultTrackerClient(),
     private val dhtNode: DhtNode? = null,
     private val scope: CoroutineScope,
-    private val maxConnections: Int = 20,
+    private val maxConnections: Int = 30,
+    val peerHints: List<String> = emptyList(),
+    val exactSources: List<String> = emptyList(),
     private val onResolved: suspend (TorrentMetadata, ByteArray) -> Unit
 ) {
     private val ourPeerId = PeerIdGenerator.generate()
@@ -48,8 +52,9 @@ class MagnetMetadataFetcher(
 
     private var announceJob: Job? = null
     private var dhtJob: Job? = null
+    private var httpFetchJob: Job? = null
 
-    val allTrackers: List<String> = (initialTrackers + FALLBACK_TRACKERS).distinct()
+    val allTrackers: List<String> = (initialTrackers + FALLBACK_TRACKERS + com.nutorrent.torrent.tracker.CommunityTrackersSync.getCachedTrackers()).distinct()
 
     val connectedPeersCount: Int get() = activeConnections.size
     val totalDiscoveredCount: Int get() = discoveredPeers.size
@@ -62,6 +67,8 @@ class MagnetMetadataFetcher(
             "udp://tracker.torrent.eu.org:451/announce",
             "udp://explodie.org:6969/announce",
             "udp://tracker.openbittorrent.com:6969/announce",
+            "udp://tracker.moeking.me:6969/announce",
+            "udp://opentor.org:2710/announce",
             "http://tracker.opentrackr.org:1337/announce"
         )
     }
@@ -70,7 +77,49 @@ class MagnetMetadataFetcher(
         if (!isRunning.compareAndSet(false, true)) return
         Lg.i(LogCategory.METAINFO, "Starting metadata fetch for magnet: ${torrentId.hex}")
 
-        // 1. Announce to trackers
+        // 1. Ingest peer hints directly from magnet URI (x.pe=)
+        for (hint in peerHints) {
+            try {
+                val parts = hint.split(':')
+                if (parts.size == 2) {
+                    val ip = parts[0].trim().removePrefix("[").removeSuffix("]")
+                    val port = parts[1].trim().toInt()
+                    addPeer(PeerEndpoint(ip, port))
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 2. Fetch directly from exact source (.torrent URL) if available (xs=)
+        if (exactSources.isNotEmpty()) {
+            httpFetchJob = scope.launch(Dispatchers.IO) {
+                for (sourceUrl in exactSources) {
+                    if (!isRunning.get() || isResolved.get()) break
+                    if (sourceUrl.startsWith("http://", ignoreCase = true) || sourceUrl.startsWith("https://", ignoreCase = true)) {
+                        try {
+                            val conn = URL(sourceUrl).openConnection() as HttpURLConnection
+                            conn.connectTimeout = 8000
+                            conn.readTimeout = 12000
+                            conn.instanceFollowRedirects = true
+                            conn.setRequestProperty("User-Agent", "NuTorrent/1.0.0")
+                            val bytes = conn.inputStream.use { it.readBytes() }
+                            val meta = MetainfoParser.parse(bytes)
+                            if (meta.torrentId == torrentId) {
+                                if (isResolved.compareAndSet(false, true)) {
+                                    Lg.i(LogCategory.METAINFO, "Resolved metadata directly from exact source: $sourceUrl")
+                                    stop()
+                                    onResolved(meta, bytes)
+                                    return@launch
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Lg.d(LogCategory.METAINFO, "Could not fetch exact source $sourceUrl: ${e.message}")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Announce to trackers
         announceJob = scope.launch(Dispatchers.IO) {
             announceAllTrackers()
             while (isActive && isRunning.get() && !isResolved.get()) {
@@ -81,7 +130,7 @@ class MagnetMetadataFetcher(
             }
         }
 
-        // 2. Query DHT
+        // 4. Query DHT
         dhtJob = scope.launch(Dispatchers.IO) {
             dhtNode?.let { dht ->
                 try {
@@ -150,6 +199,18 @@ class MagnetMetadataFetcher(
         val listener = object : PeerConnectionListener {
             override fun onHandshakeCompleted(peer: PeerConnection) {
                 Lg.d(LogCategory.PEER, "Metadata fetcher handshake complete with ${peer.endpoint}")
+                if (!peer.peerSupportsExtensionProtocol) {
+                    peer.disconnect()
+                } else {
+                    scope.launch(Dispatchers.IO) {
+                        delay(3500L)
+                        if (!isResolved.get() && isRunning.get() && activeConnections.containsKey(peer.endpoint)) {
+                            if (!peer.peerExtensions.containsKey("ut_metadata")) {
+                                peer.disconnect()
+                            }
+                        }
+                    }
+                }
             }
 
             override fun onBitfield(peer: PeerConnection, bitfield: PeerBitfield) {}
@@ -164,6 +225,8 @@ class MagnetMetadataFetcher(
                     }
                     val nextPiece = metadataExchange.getNextNeededPiece() ?: 0
                     peer.sendMetadataRequest(nextPiece)
+                } else {
+                    peer.disconnect()
                 }
             }
 
@@ -221,7 +284,7 @@ class MagnetMetadataFetcher(
             totalPieces = 0,
             listener = listener,
             scope = scope,
-            connectTimeoutMs = 4000
+            connectTimeoutMs = 3000
         )
         activeConnections[endpoint] = conn
         conn.start()
@@ -231,6 +294,7 @@ class MagnetMetadataFetcher(
         if (isRunning.compareAndSet(true, false)) {
             announceJob?.cancel()
             dhtJob?.cancel()
+            httpFetchJob?.cancel()
             for (conn in activeConnections.values) {
                 conn.close()
             }

@@ -26,6 +26,7 @@ class PieceManager(
     private val pieceAvailability = IntArray(totalPieces) { 0 }
     private val activeDownloaders = ConcurrentHashMap<Int, PieceDownloader>()
     private val filePriorities = Array(metadata.files.size) { FilePriority.NORMAL }
+    private var cachedPiecePriorities: List<FilePriority> = calculatePiecePriorities()
     val ourBitfield = PeerBitfield(totalPieces)
 
     var completedPiecesCount: Int = 0
@@ -34,22 +35,8 @@ class PieceManager(
     var verifiedBytes: Long = 0L
         private set
 
-    @Synchronized
-    fun setFilePriority(fileIndex: Int, priority: FilePriority) {
-        if (fileIndex in filePriorities.indices) {
-            filePriorities[fileIndex] = priority
-        }
-    }
-
-    @Synchronized
-    fun getFilePriorities(): List<FilePriority> = filePriorities.toList()
-
-    @Synchronized
-    fun getPieceStates(): List<PieceState> = pieceStates.toList()
-
-    @Synchronized
-    fun computePiecePriorities(): List<FilePriority> {
-        val result = mutableListOf<FilePriority>()
+    private fun calculatePiecePriorities(): List<FilePriority> {
+        val result = ArrayList<FilePriority>(totalPieces)
         for (i in 0 until totalPieces) {
             val pieceStart = metadata.getPieceOffset(i)
             val pieceEnd = pieceStart + metadata.getPieceLength(i)
@@ -70,11 +57,28 @@ class PieceManager(
     }
 
     @Synchronized
+    fun setFilePriority(fileIndex: Int, priority: FilePriority) {
+        if (fileIndex in filePriorities.indices) {
+            filePriorities[fileIndex] = priority
+            cachedPiecePriorities = calculatePiecePriorities()
+        }
+    }
+
+    @Synchronized
+    fun getFilePriorities(): List<FilePriority> = filePriorities.toList()
+
+    @Synchronized
+    fun getPieceStates(): List<PieceState> = pieceStates.toList()
+
+    @Synchronized
+    fun computePiecePriorities(): List<FilePriority> = cachedPiecePriorities
+
+    @Synchronized
     fun isEndGame(): Boolean {
         val hasPendingNewPieces = pieceStates.any { it == PieceState.MISSING || it == PieceState.FAILED }
         if (hasPendingNewPieces) return false
         val remainingBlocks = activeDownloaders.values.sumOf { it.remainingBlocksCount() }
-        return remainingBlocks in 1..20
+        return remainingBlocks in 1..100
     }
 
     @Synchronized
@@ -83,13 +87,13 @@ class PieceManager(
     }
 
     @Synchronized
-    fun getPieceStatesList(): List<PieceState> = pieceStates.toList()
+    fun getPieceStatesList(): List<PieceState> = pieceStates.asList()
 
     @Synchronized
     fun isComplete(): Boolean {
-        val piecePriorities = computePiecePriorities()
+        val priorities = cachedPiecePriorities
         for (i in 0 until totalPieces) {
-            if (piecePriorities[i] != FilePriority.DO_NOT_DOWNLOAD && pieceStates[i] != PieceState.COMPLETE) {
+            if (priorities[i] != FilePriority.DO_NOT_DOWNLOAD && pieceStates[i] != PieceState.COMPLETE) {
                 return false
             }
         }
@@ -131,9 +135,9 @@ class PieceManager(
 
     @Synchronized
     fun hasPiecesWeNeed(peerBitfield: PeerBitfield): Boolean {
-        val piecePriorities = computePiecePriorities()
+        val priorities = cachedPiecePriorities
         for (i in 0 until totalPieces) {
-            if (peerBitfield.hasPiece(i) && pieceStates[i] != PieceState.COMPLETE && piecePriorities[i] != FilePriority.DO_NOT_DOWNLOAD) {
+            if (peerBitfield.hasPiece(i) && pieceStates[i] != PieceState.COMPLETE && priorities[i] != FilePriority.DO_NOT_DOWNLOAD) {
                 return true
             }
         }
@@ -151,9 +155,17 @@ class PieceManager(
             }
         }
 
+        // 1b. Trailing block racing: if an active piece has blocks pending > 4s, race them to prevent pipelined stall
+        for ((pieceIndex, downloader) in activeDownloaders) {
+            if (peerBitfield.hasPiece(pieceIndex) && !downloader.isAllBlocksDownloaded()) {
+                val stalled = downloader.getStalledPendingBlock(4000L)
+                if (stalled != null) return stalled
+            }
+        }
+
         // 2. Select a new piece to download using the scheduler
-        val piecePriorities = computePiecePriorities()
-        val nextPieceIndex = scheduler.selectNextPiece(peerBitfield, pieceStates.toList(), pieceAvailability, piecePriorities)
+        val piecePriorities = cachedPiecePriorities
+        val nextPieceIndex = scheduler.selectNextPiece(peerBitfield, pieceStates.asList(), pieceAvailability, piecePriorities)
             ?: return null
 
         val pieceLength = metadata.getPieceLength(nextPieceIndex)
@@ -180,8 +192,17 @@ class PieceManager(
             }
         }
 
+        // 1b. Trailing block racing for allowed fast pieces
+        for (pieceIndex in allowedPieces) {
+            val downloader = activeDownloaders[pieceIndex]
+            if (downloader != null && peerBitfield.hasPiece(pieceIndex) && !downloader.isAllBlocksDownloaded()) {
+                val stalled = downloader.getStalledPendingBlock(4000L)
+                if (stalled != null) return stalled
+            }
+        }
+
         // 2. Pick a new piece from allowed pieces that this peer has and we still need
-        val piecePriorities = computePiecePriorities()
+        val piecePriorities = cachedPiecePriorities
         val candidate = allowedPieces
             .filter { idx ->
                 idx in 0 until totalPieces &&
@@ -238,6 +259,14 @@ class PieceManager(
     }
 
     @Synchronized
+    fun onPieceWriteFailed(pieceIndex: Int) {
+        if (pieceIndex in 0 until totalPieces && pieceStates[pieceIndex] != PieceState.COMPLETE) {
+            pieceStates[pieceIndex] = PieceState.FAILED
+            activeDownloaders.remove(pieceIndex)
+        }
+    }
+
+    @Synchronized
     fun onBlockRequestFailed(pieceIndex: Int, offset: Int) {
         val downloader = activeDownloaders[pieceIndex]
         if (downloader != null) {
@@ -256,6 +285,19 @@ class PieceManager(
     }
 
     @Synchronized
+    fun markPieceIncomplete(pieceIndex: Int) {
+        if (pieceIndex in 0 until totalPieces) {
+            if (pieceStates[pieceIndex] == PieceState.COMPLETE || ourBitfield.hasPiece(pieceIndex)) {
+                completedPiecesCount = maxOf(0, completedPiecesCount - 1)
+                verifiedBytes = maxOf(0L, verifiedBytes - metadata.getPieceLength(pieceIndex))
+            }
+            pieceStates[pieceIndex] = PieceState.MISSING
+            ourBitfield.setPiece(pieceIndex, false)
+            activeDownloaders.remove(pieceIndex)
+        }
+    }
+
+    @Synchronized
     fun resetAllPieces() {
         for (i in 0 until totalPieces) {
             pieceStates[i] = PieceState.MISSING
@@ -264,6 +306,31 @@ class PieceManager(
         completedPiecesCount = 0
         verifiedBytes = 0L
         activeDownloaders.clear()
+    }
+
+    @Synchronized
+    fun markAllPiecesComplete() {
+        for (i in 0 until totalPieces) {
+            pieceStates[i] = PieceState.COMPLETE
+        }
+        ourBitfield.setAll(true)
+        completedPiecesCount = totalPieces
+        verifiedBytes = metadata.totalLength
+        activeDownloaders.clear()
+    }
+
+    @Synchronized
+    fun restoreFromBitfield(bitfieldBytes: ByteArray) {
+        resetAllPieces()
+        val copyLen = minOf(ourBitfield.bytes.size, bitfieldBytes.size)
+        System.arraycopy(bitfieldBytes, 0, ourBitfield.bytes, 0, copyLen)
+        for (i in 0 until totalPieces) {
+            if (ourBitfield.hasPiece(i)) {
+                pieceStates[i] = PieceState.COMPLETE
+                completedPiecesCount++
+                verifiedBytes += metadata.getPieceLength(i)
+            }
+        }
     }
 
     var isSequential: Boolean

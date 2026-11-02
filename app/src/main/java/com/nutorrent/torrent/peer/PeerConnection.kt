@@ -52,7 +52,7 @@ class PeerConnection(
     val ourBitfield: PeerBitfield? = null,
     val listener: PeerConnectionListener,
     private val scope: CoroutineScope,
-    val connectTimeoutMs: Int = 10000,
+    val connectTimeoutMs: Int = 3000,
     val readTimeoutMs: Int = 30000,
     val bandwidthManager: com.nutorrent.torrent.network.BandwidthManager? = null,
     private val incomingSocket: Socket? = null,
@@ -96,6 +96,29 @@ class PeerConnection(
         private set
     var peerSupportsFastExtension: Boolean = false
         private set
+    var peerSupportsExtensionProtocol: Boolean = false
+        private set
+
+    private var speedWindowStart: Long = System.currentTimeMillis()
+    private var bytesInWindow: Long = 0L
+    @Volatile
+    var currentDownloadRateBps: Long = 0L
+        private set
+
+    private val requestWireBuffer = ByteArray(17).apply {
+        this[0] = 0
+        this[1] = 0
+        this[2] = 0
+        this[3] = 13 // Length = 13
+        this[4] = 6  // ID = 6 (Request)
+    }
+
+    private fun writeIntToBuffer(buf: ByteArray, offset: Int, value: Int) {
+        buf[offset] = (value ushr 24).toByte()
+        buf[offset + 1] = (value ushr 16).toByte()
+        buf[offset + 2] = (value ushr 8).toByte()
+        buf[offset + 3] = value.toByte()
+    }
 
     val stateInfo: PeerStateInfo
         get() = PeerStateInfo(
@@ -143,13 +166,25 @@ class PeerConnection(
     private suspend fun connectAndPerformHandshake() = withContext(Dispatchers.IO) {
         val s = Socket()
         socket = s
-        // Set short 7-second timeout for handshake to avoid stalling connection pool
-        s.soTimeout = 7000
+        s.tcpNoDelay = true
+        s.receiveBufferSize = 2097152
+        s.sendBufferSize = 524288
+        try {
+            s.trafficClass = 0x08 // IPTOS_THROUGHPUT
+        } catch (_: Exception) {}
+        // Set responsive 3.5-second timeout for handshake to avoid stalling connection pool
+        s.soTimeout = 3500
         s.connect(InetSocketAddress(endpoint.ip, endpoint.port), connectTimeoutMs)
+        s.tcpNoDelay = true
+        s.receiveBufferSize = 2097152
+        s.sendBufferSize = 524288
+        try {
+            s.trafficClass = 0x08 // IPTOS_THROUGHPUT
+        } catch (_: Exception) {}
         Lg.d(LogCategory.PEER, "[PEER] connected to $endpoint")
 
-        val out = BufferedOutputStream(s.getOutputStream())
-        val inp = BufferedInputStream(s.getInputStream())
+        val out = BufferedOutputStream(s.getOutputStream(), 262144)
+        val inp = BufferedInputStream(s.getInputStream(), 262144)
         outputStream = out
         inputStream = inp
 
@@ -166,6 +201,7 @@ class PeerConnection(
         }
         peerId = peerHandshake.peerId
         peerSupportsFastExtension = peerHandshake.supportsFastExtension
+        peerSupportsExtensionProtocol = peerHandshake.supportsExtensionProtocol
         isHandshakeComplete = true
         chokeReceivedAt = System.currentTimeMillis()
         lastActivityTime = System.currentTimeMillis()
@@ -186,9 +222,15 @@ class PeerConnection(
 
     private suspend fun handleIncomingConnection(s: Socket, preReadHandshake: PeerHandshake?) = withContext(Dispatchers.IO) {
         socket = s
-        s.soTimeout = 7000
-        val inp = BufferedInputStream(s.getInputStream())
-        val out = BufferedOutputStream(s.getOutputStream())
+        s.tcpNoDelay = true
+        s.receiveBufferSize = 2097152
+        s.sendBufferSize = 524288
+        try {
+            s.trafficClass = 0x08 // IPTOS_THROUGHPUT
+        } catch (_: Exception) {}
+        s.soTimeout = 3500
+        val inp = BufferedInputStream(s.getInputStream(), 262144)
+        val out = BufferedOutputStream(s.getOutputStream(), 262144)
         inputStream = inp
         outputStream = out
 
@@ -203,6 +245,7 @@ class PeerConnection(
 
         peerId = peerHs.peerId
         peerSupportsFastExtension = peerHs.supportsFastExtension
+        peerSupportsExtensionProtocol = peerHs.supportsExtensionProtocol
         isHandshakeComplete = true
         chokeReceivedAt = System.currentTimeMillis()
         lastActivityTime = System.currentTimeMillis()
@@ -300,11 +343,22 @@ class PeerConnection(
                     listener.onBitfield(this@PeerConnection, peerBitfield)
                 }
                 is PeerMessage.Piece -> {
-                    Lg.d(LogCategory.PEER, "[PIECE] received piece=${message.index} offset=${message.begin} length=${message.block.size}")
                     bandwidthManager?.acquireDownload(infoHashHex, message.block.size)
                     successfulBlocksCount++
-                    downloadedBytes.addAndGet(message.block.size.toLong())
-                    val req = BlockRequest(message.index, message.begin, message.block.size)
+                    val blockSize = message.block.size
+                    downloadedBytes.addAndGet(blockSize.toLong())
+
+                    // Track rolling download speed for pipeline scaling
+                    val now = System.currentTimeMillis()
+                    bytesInWindow += blockSize
+                    val dt = now - speedWindowStart
+                    if (dt >= 1000L) {
+                        currentDownloadRateBps = (bytesInWindow * 1000L) / dt
+                        speedWindowStart = now
+                        bytesInWindow = 0L
+                    }
+
+                    val req = BlockRequest(message.index, message.begin, blockSize)
                     pendingRequests.remove(req)
                     listener.onPieceBlock(this@PeerConnection, message.index, message.begin, message.block)
                 }
@@ -333,22 +387,51 @@ class PeerConnection(
     }
 
     @Synchronized
-    fun sendRequest(request: BlockRequest): Boolean {
-        if (!isRunning.get() || pendingRequests.containsKey(request)) return false
-        val isAllowedFast = peerSupportsFastExtension && allowedFastPieces.contains(request.pieceIndex)
-        if (isChokingUs && !isAllowedFast) return false
-        val out = outputStream ?: return false
+    fun sendRequests(requests: List<BlockRequest>): Int {
+        if (!isRunning.get() || requests.isEmpty()) return 0
+        val out = outputStream ?: return 0
+        var sent = 0
+        try {
+            val now = System.currentTimeMillis()
+            for (request in requests) {
+                if (pendingRequests.containsKey(request)) continue
+                val isAllowedFast = peerSupportsFastExtension && allowedFastPieces.contains(request.pieceIndex)
+                if (isChokingUs && !isAllowedFast) continue
 
-        return try {
-            pendingRequests[request] = System.currentTimeMillis()
-            Lg.d(LogCategory.PEER, "[REQUEST] piece=${request.pieceIndex} offset=${request.beginOffset} length=${request.length}${if (isAllowedFast) " (AllowedFast)" else ""}")
-            PeerWireCodec.writeMessage(out, PeerMessage.Request(request.pieceIndex, request.beginOffset, request.length))
-            true
+                pendingRequests[request] = now
+                writeIntToBuffer(requestWireBuffer, 5, request.pieceIndex)
+                writeIntToBuffer(requestWireBuffer, 9, request.beginOffset)
+                writeIntToBuffer(requestWireBuffer, 13, request.length)
+                out.write(requestWireBuffer, 0, 17)
+                sent++
+            }
+            if (sent > 0) {
+                out.flush()
+            }
         } catch (e: Exception) {
-            pendingRequests.remove(request)
             closeInternal()
-            false
         }
+        return sent
+    }
+
+    @Synchronized
+    fun sendRequest(request: BlockRequest): Boolean {
+        return sendRequests(listOf(request)) > 0
+    }
+
+    @Synchronized
+    fun sweepStalledRequests(timeoutMs: Long = 15_000L): List<BlockRequest> {
+        val now = System.currentTimeMillis()
+        val stalled = mutableListOf<BlockRequest>()
+        val it = pendingRequests.entries.iterator()
+        while (it.hasNext()) {
+            val entry = it.next()
+            if (now - entry.value > timeoutMs) {
+                stalled.add(entry.key)
+                it.remove()
+            }
+        }
+        return stalled
     }
 
     @Synchronized

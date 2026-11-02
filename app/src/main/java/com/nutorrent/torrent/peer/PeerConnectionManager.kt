@@ -20,7 +20,7 @@ class PeerConnectionManager(
     val totalPieces: Int,
     val ourBitfield: PeerBitfield,
     private val scope: CoroutineScope,
-    var maxConnections: Int = 30,
+    var maxConnections: Int = 60,
     val listener: PeerConnectionListener,
     val bandwidthManager: com.nutorrent.torrent.network.BandwidthManager? = null
 ) {
@@ -35,6 +35,9 @@ class PeerConnectionManager(
 
     val totalKnownCount: Int
         get() = knownPeers.size
+
+    val connectedSeedsCount: Int
+        get() = activeConnections.values.count { totalPieces > 0 && it.peerBitfield.countPieces() >= totalPieces }
 
     fun addPeers(endpoints: List<PeerEndpoint>) {
         var addedAny = false
@@ -64,7 +67,7 @@ class PeerConnectionManager(
                 if (needed <= 0) return@withLock
 
                 val now = System.currentTimeMillis()
-                failedPeers.entries.removeIf { now - it.value > 25_000 }
+                failedPeers.entries.removeIf { now - it.value > 15_000 }
 
                 val candidates = knownPeers.filter { ep ->
                     !activeConnections.containsKey(ep) &&
@@ -84,6 +87,9 @@ class PeerConnectionManager(
             pendingConnections.remove(peer.endpoint)
             activeConnections[peer.endpoint] = peer
             listener.onHandshakeCompleted(peer)
+            if (activeConnections.size < maxConnections) {
+                reconnectIfNeeded()
+            }
         }
 
         override fun onBitfield(peer: PeerConnection, bitfield: PeerBitfield) {
@@ -146,7 +152,7 @@ class PeerConnectionManager(
             ourBitfield = ourBitfield,
             listener = createWrappedListener(),
             scope = scope,
-            connectTimeoutMs = 5000,
+            connectTimeoutMs = 3000,
             bandwidthManager = bandwidthManager
         )
         pendingConnections[endpoint] = conn
