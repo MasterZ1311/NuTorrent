@@ -43,6 +43,10 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.interaction.MutableInteractionSource
+
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -82,6 +86,16 @@ import com.nutorrent.ui.theme.NuPrimary
 import com.nutorrent.ui.theme.NuSecondary
 import com.nutorrent.ui.theme.NuSuccess
 import com.nutorrent.ui.theme.NuWarning
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import com.nutorrent.R
+import com.nutorrent.ui.theme.NuCyberEmerald
+import com.nutorrent.ui.theme.NuPrimaryDark
+import com.nutorrent.ui.theme.NuDarkCard
 
 @Composable
 fun StatusBadge(
@@ -651,3 +665,306 @@ fun BatchActionBar(
         }
     }
 }
+
+/**
+ * Cyber-Kinetic Animated NuTorrent Logo with smooth GPU-accelerated motion:
+ * - Dual counter-rotating dashed orbital rings.
+ * - Reactive pulse glow (speed increases when active torrent transfers occur).
+ * - Floating micro-bobbing physics.
+ * - Interactive 3D spring flip when tapped with crisp haptic response.
+ */
+@Composable
+fun AnimatedNuLogo(
+    modifier: Modifier = Modifier,
+    size: Dp = 32.dp,
+    isTransferActive: Boolean = false,
+    interactive: Boolean = true,
+    onClick: (() -> Unit)? = null
+) {
+    val context = LocalContext.current
+    var isFlipped by remember { mutableStateOf(false) }
+
+    // 3D Flip angle on tap
+    val flipRotation by animateFloatAsState(
+        targetValue = if (isFlipped) 360f else 0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "LogoFlip"
+    )
+
+    // Continuous orbital rotation (accelerates when transfers are active)
+    val infiniteTransition = rememberInfiniteTransition(label = "LogoMotion")
+    val orbitDuration = if (isTransferActive) 3500 else 7000
+    val ringRotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(orbitDuration, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "OrbitRotation"
+    )
+
+    // Ambient breathing glow pulse
+    val glowAlpha by infiniteTransition.animateFloat(
+        initialValue = if (isTransferActive) 0.35f else 0.15f,
+        targetValue = if (isTransferActive) 0.85f else 0.45f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (isTransferActive) 1000 else 2200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "GlowAlpha"
+    )
+
+    // Subtle micro-float
+    val floatOffset by infiniteTransition.animateFloat(
+        initialValue = -1.5f,
+        targetValue = 1.5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "FloatOffset"
+    )
+
+    val primaryColor = NuPrimary
+    val accentColor = if (isTransferActive) NuCyberEmerald else NuPrimaryDark
+
+    Box(
+        modifier = modifier
+            .size(size)
+            .graphicsLayer {
+                rotationY = flipRotation
+                translationY = floatOffset
+                cameraDistance = 12f * density
+            }
+            .then(
+                if (interactive) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        NuHaptics.heavyClick(context)
+                        isFlipped = !isFlipped
+                        onClick?.invoke()
+                    }
+                } else Modifier
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        // Orbital Kinetic Rings Canvas
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val strokeWidth = (this.size.minDimension * 0.045f).coerceAtLeast(1.5f)
+            val ringRadius = (this.size.minDimension / 2f) - (strokeWidth / 2f)
+
+            // Outer kinetic dashed ring (rotates clockwise)
+            drawCircle(
+                brush = Brush.sweepGradient(
+                    listOf(
+                        primaryColor.copy(alpha = glowAlpha),
+                        accentColor.copy(alpha = glowAlpha * 0.5f),
+                        Color.Transparent,
+                        primaryColor.copy(alpha = glowAlpha)
+                    )
+                ),
+                radius = ringRadius,
+                style = Stroke(
+                    width = strokeWidth,
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), ringRotation)
+                )
+            )
+
+            // Inner counter-rotating ring (rotates counter-clockwise)
+            val innerRadius = ringRadius * 0.82f
+            drawCircle(
+                brush = Brush.sweepGradient(
+                    listOf(
+                        accentColor.copy(alpha = glowAlpha * 0.6f),
+                        Color.Transparent,
+                        primaryColor.copy(alpha = glowAlpha * 0.8f),
+                        accentColor.copy(alpha = glowAlpha * 0.6f)
+                    )
+                ),
+                radius = innerRadius,
+                style = Stroke(
+                    width = (strokeWidth * 0.75f).coerceAtLeast(1f),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 10f), -ringRotation * 1.5f)
+                )
+            )
+
+            // Radial ambient soft glow behind the logo
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        (if (isTransferActive) NuCyberEmerald else NuPrimary).copy(alpha = glowAlpha * 0.4f),
+                        Color.Transparent
+                    ),
+                    radius = ringRadius * 0.95f
+                ),
+                radius = ringRadius * 0.95f
+            )
+        }
+
+        // The core App Logo Icon
+        Image(
+            painter = painterResource(id = R.drawable.ic_app_logo),
+            contentDescription = "NuTorrent Logo",
+            modifier = Modifier
+                .size(size * 0.72f)
+                .clip(CircleShape)
+        )
+    }
+}
+
+/**
+ * Stylish cyber-kinetic loading state featuring the animated NuTorrent logo,
+ * expanding pulse sonar rings, and status text.
+ */
+@Composable
+fun NuLogoLoadingIndicator(
+    modifier: Modifier = Modifier,
+    message: String = "Loading...",
+    logoSize: Dp = 64.dp
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "LoadingRings")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.8f,
+        targetValue = 1.35f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "PulseScale"
+    )
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.6f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "PulseAlpha"
+    )
+
+    Column(
+        modifier = modifier.padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier.size(logoSize * 1.6f),
+            contentAlignment = Alignment.Center
+        ) {
+            // Expanding Sonar Ping Ring
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val baseRadius = (size.minDimension / 2f) * 0.7f
+                drawCircle(
+                    color = NuPrimary.copy(alpha = pulseAlpha),
+                    radius = baseRadius * pulseScale,
+                    style = Stroke(width = 2.dp.toPx())
+                )
+                drawCircle(
+                    color = NuCyberEmerald.copy(alpha = pulseAlpha * 0.5f),
+                    radius = baseRadius * (pulseScale * 0.85f),
+                    style = Stroke(width = 1.5.dp.toPx())
+                )
+            }
+
+            AnimatedNuLogo(
+                size = logoSize,
+                isTransferActive = true,
+                interactive = false
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium.copy(
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.5.sp
+            ),
+            color = NuPrimary
+        )
+    }
+}
+
+/**
+ * Interactive Cyber-Kinetic Engine dialog triggered by tapping the logo.
+ * Displays high-performance architecture stats and features.
+ */
+@Composable
+fun NuAboutEngineDialog(
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                AnimatedNuLogo(size = 36.dp, isTransferActive = true, interactive = false)
+                Column {
+                    Text(
+                        text = "NuTorrent Engine",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = NuPrimary
+                    )
+                    Text(
+                        text = "v1.0.0 Cyber-Edition",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NuSecondary
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "High-Performance Pure Kotlin BitTorrent Engine built for maximum throughput, hardware acceleration, and battery efficiency.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = NuGlassCard,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NuGlassBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "⚡ Engine: Pure Kotlin Coroutines & NIO",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NuCyberEmerald
+                        )
+                        Text(
+                            text = "🔒 Security: Encrypted P2P & Clean Sandbox",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NuNeonPlasma
+                        )
+                        Text(
+                            text = "🎮 UI: 120Hz Jetpack Compose & Haptics",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NuPrimary
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("DISMISS", color = NuPrimary, fontWeight = FontWeight.Bold)
+            }
+        },
+        containerColor = NuDarkCard
+    )
+}
+

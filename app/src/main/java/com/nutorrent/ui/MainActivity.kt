@@ -44,6 +44,25 @@ import com.nutorrent.ui.home.HomeScreen
 import com.nutorrent.ui.navigation.Screen
 import com.nutorrent.ui.settings.SettingsScreen
 import com.nutorrent.ui.theme.NuTorrentTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.nutorrent.ui.components.AnimatedNuLogo
+import com.nutorrent.ui.theme.NuCyberEmerald
+import com.nutorrent.ui.theme.NuDarkBackground
+import com.nutorrent.ui.theme.NuPrimary
+
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -113,14 +132,33 @@ class MainActivity : ComponentActivity() {
             }
 
             NuTorrentTheme(darkTheme = isDarkTheme) {
+                var isAppInitializing by remember { mutableStateOf(incomingIntentData.value == null) }
+
+                LaunchedEffect(Unit) {
+                    if (isAppInitializing) {
+                        kotlinx.coroutines.delay(950)
+                        isAppInitializing = false
+                    }
+                }
+
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    NuTorrentAppNavigation(
-                        app = app,
-                        incomingData = incomingIntentData.value,
-                        onOpenTorrentPicker = { launcher ->
-                            launcher.launch(arrayOf("*/*", "application/x-bittorrent"))
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        NuTorrentAppNavigation(
+                            app = app,
+                            incomingData = incomingIntentData.value,
+                            onOpenTorrentPicker = { launcher ->
+                                launcher.launch(arrayOf("*/*", "application/x-bittorrent"))
+                            }
+                        )
+
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = isAppInitializing,
+                            enter = fadeIn(),
+                            exit = fadeOut(tween(350)) + scaleOut(targetScale = 1.05f, animationSpec = tween(350))
+                        ) {
+                            NuAppSplashScreen(onDismiss = { isAppInitializing = false })
                         }
-                    )
+                    }
                 }
             }
         }
@@ -313,3 +351,51 @@ fun NuTorrentAppNavigation(
         }
     }
 }
+
+@Composable
+fun NuAppSplashScreen(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(NuDarkBackground)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                NuHaptics.tick(context)
+                onDismiss()
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            AnimatedNuLogo(
+                size = 100.dp,
+                isTransferActive = true,
+                interactive = false
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "NuTorrent",
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.5).sp
+                ),
+                color = NuPrimary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "CYBER-KINETIC BITTORRENT ENGINE",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    letterSpacing = 1.8.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                color = NuCyberEmerald
+            )
+        }
+    }
+}
+

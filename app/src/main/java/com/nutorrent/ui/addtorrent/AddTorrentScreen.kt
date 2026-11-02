@@ -33,6 +33,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import com.nutorrent.ui.components.NuLogoLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -256,15 +257,11 @@ fun AddTorrentScreen(
         ) {
             when {
                 isLoading -> {
-                    Column(
+                    NuLogoLoadingIndicator(
                         modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Reading torrent metainfo...")
-                    }
+                        message = "Reading torrent metainfo...",
+                        logoSize = 56.dp
+                    )
                 }
                 errorMessage != null -> {
                     Column(

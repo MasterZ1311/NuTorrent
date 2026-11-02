@@ -16,6 +16,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nutorrent.core.device.NuHaptics
 import com.nutorrent.core.device.NuSoundFeedback
+import com.nutorrent.ui.components.AnimatedNuLogo
+import com.nutorrent.ui.components.NuAboutEngineDialog
 import com.nutorrent.ui.components.BatchActionBar
 import com.nutorrent.ui.components.NetworkSpeedGauge
 import com.nutorrent.ui.theme.NuGlassCard
@@ -199,6 +201,7 @@ fun HomeScreen(
     var deleteTorrentTarget by remember { mutableStateOf<TorrentSummaryItem?>(null) }
     var deleteFilesChecked by remember { mutableStateOf(false) }
 
+    var showEngineStatusDialog by remember { mutableStateOf(false) }
     var showAddChooserDialog by remember { mutableStateOf(false) }
     var showMagnetInputDialog by remember { mutableStateOf(false) }
     var magnetInputText by remember { mutableStateOf("") }
@@ -270,10 +273,11 @@ fun HomeScreen(
                 TopAppBar(
                     title = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Image(
-                                painter = painterResource(R.drawable.ic_app_logo),
-                                contentDescription = "NuTorrent Logo",
-                                modifier = Modifier.size(28.dp)
+                            AnimatedNuLogo(
+                                size = 32.dp,
+                                isTransferActive = downloadingCount > 0 || seedingCount > 0,
+                                interactive = true,
+                                onClick = { showEngineStatusDialog = true }
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
@@ -689,6 +693,10 @@ fun HomeScreen(
         }
     }
 
+    if (showEngineStatusDialog) {
+        NuAboutEngineDialog(onDismiss = { showEngineStatusDialog = false })
+    }
+
     if (showBatchDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showBatchDeleteDialog = false },
@@ -1016,13 +1024,10 @@ fun EmptyHomeState(
                 .padding(24.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            Icon(
-                imageVector = Icons.Outlined.CloudDownload,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .size(64.dp)
-                    .graphicsLayer { translationY = floatOffset }
+            AnimatedNuLogo(
+                size = 76.dp,
+                isTransferActive = false,
+                interactive = true
             )
             Spacer(modifier = Modifier.height(12.dp))
             Text(
