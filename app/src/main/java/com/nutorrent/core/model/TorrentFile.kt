@@ -13,7 +13,10 @@ data class TorrentFile(
     val endByte: Long
 ) {
     init {
+        require(index >= 0) { "File index cannot be negative" }
         require(length >= 0) { "File length cannot be negative" }
+        require(startByte >= 0) { "Start byte cannot be negative" }
+        require(endByte >= startByte) { "End byte cannot be before start byte" }
         require(endByte == startByte + length) { "endByte must equal startByte + length" }
     }
 

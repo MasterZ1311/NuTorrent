@@ -6,7 +6,7 @@ package com.nutorrent.core.model
 data class ResourceGovernorConfig(
     val maxActiveDownloads: Int = 3,
     val maxActiveSeeds: Int = 5,
-    val maxTotalPeerConnections: Int = 100,
+    val maxTotalPeerConnections: Int = 200,
     val maxDownloadSpeedBps: Long = 0L, // 0 = unlimited
     val maxUploadSpeedBps: Long = 0L    // 0 = unlimited
 ) {

@@ -25,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 class TorrentEngine(
-    val defaultMaxPeerConnections: Int = 30,
+    val defaultMaxPeerConnections: Int = 80,
     private val trackerClient: TrackerClient? = null,
     val governor: ResourceGovernor = ResourceGovernor(),
     val bandwidthManager: com.nutorrent.torrent.network.BandwidthManager = com.nutorrent.torrent.network.BandwidthManager(),
@@ -34,6 +34,9 @@ class TorrentEngine(
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val sessions = ConcurrentHashMap<TorrentId, TorrentSession>()
     private val queueOrder = CopyOnWriteArrayList<TorrentId>()
+    val engineStartTime: Long = System.currentTimeMillis()
+
+    fun getSessionUptimeMs(): Long = System.currentTimeMillis() - engineStartTime
 
     val lpdSubsystem = com.nutorrent.torrent.lpd.LpdSubsystem(engineScope)
     val dhtNode = com.nutorrent.torrent.dht.DhtNode(scope = engineScope)
@@ -61,6 +64,9 @@ class TorrentEngine(
         private set
 
     var isWifiConnected: Boolean = false
+        private set
+
+    var isNetworkConnected: Boolean = true
         private set
 
     init {
@@ -107,7 +113,7 @@ class TorrentEngine(
         metadata: TorrentMetadata,
         storage: TorrentStorage
     ): TorrentSession {
-        val baseLimit = if (isWifiConnected) maxOf(defaultMaxPeerConnections, 50) else defaultMaxPeerConnections
+        val baseLimit = if (isWifiConnected) maxOf(defaultMaxPeerConnections, 150) else defaultMaxPeerConnections
         val allocatedPeerLimit = governor.allocatePeerLimit(baseLimit, sessions.size + 1)
         val port = if (incomingPeerServer.boundPort > 0) incomingPeerServer.boundPort else 6881
         val session = if (trackerClient != null) {
@@ -126,12 +132,22 @@ class TorrentEngine(
             session.peerManager.acceptIncomingPeer(socket, handshake)
         }
 
+        session.onStateChanged = { _ ->
+            processQueue()
+        }
+
         observeSessionState(session)
         syncState()
         engineScope.launch {
             lpdSubsystem.announce(metadata.torrentId.hex)
         }
         return session
+    }
+
+    fun replaceSession(metadata: TorrentMetadata, storage: TorrentStorage): TorrentSession {
+        val id = metadata.torrentId
+        sessions[id]?.stop()
+        return createSession(metadata, storage)
     }
 
     suspend fun setGlobalDownloadLimit(limitBps: Long) {
@@ -158,40 +174,61 @@ class TorrentEngine(
         }
     }
 
+    private var isProcessingQueue = false
+
     @Synchronized
     fun processQueue() {
-        val activeDownloads = sessions.values.count {
-            val s = it.state.value
-            s.isActive && s != TorrentState.SEEDING
-        }
+        if (isProcessingQueue) return
+        isProcessingQueue = true
+        try {
+            if (isWifiOnly && !isWifiConnected) return
+            if (batteryPaused) return
 
-        var availableSlots = (governor.config.maxActiveDownloads - activeDownloads).coerceAtLeast(0)
-
-        for (id in queueOrder) {
-            if (availableSlots <= 0) break
-            val session = sessions[id] ?: continue
-            if (session.state.value == TorrentState.QUEUED) {
-                session.start()
-                availableSlots--
+            val activeDownloads = sessions.values.count {
+                val s = it.state.value
+                s.isActive && s != TorrentState.SEEDING
             }
+
+            var availableSlots = (governor.config.maxActiveDownloads - activeDownloads).coerceAtLeast(0)
+
+            for (id in queueOrder) {
+                if (availableSlots <= 0) break
+                val session = sessions[id] ?: continue
+                if (session.state.value == TorrentState.QUEUED) {
+                    session.start()
+                    availableSlots--
+                }
+            }
+        } finally {
+            isProcessingQueue = false
         }
     }
 
     fun startOrQueue(torrentId: TorrentId) {
         val session = sessions[torrentId] ?: return
+        if (isWifiOnly && !isWifiConnected) {
+            session.pause(com.nutorrent.core.model.PauseReason.RULE_WIFI_ONLY)
+            return
+        }
+        if (batteryPaused) {
+            session.pause(currentBatteryPauseReason)
+            return
+        }
         val activeDownloads = sessions.values.count {
             val s = it.state.value
             s.isActive && s != TorrentState.SEEDING
         }
         if (governor.canStartDownload(activeDownloads)) {
             session.start()
+        } else {
+            session.setQueued()
         }
     }
 
     fun getSession(torrentId: TorrentId): TorrentSession? = sessions[torrentId]
 
     fun pauseSession(torrentId: TorrentId) {
-        sessions[torrentId]?.pause()
+        sessions[torrentId]?.pause(com.nutorrent.core.model.PauseReason.USER_MANUAL)
         processQueue()
     }
 
@@ -247,21 +284,52 @@ class TorrentEngine(
     var batteryPaused: Boolean = false
         private set
 
+    var currentBatteryPauseReason: com.nutorrent.core.model.PauseReason = com.nutorrent.core.model.PauseReason.NONE
+        private set
+
     var schedulerThrottled: Boolean = false
         private set
 
-    fun onBatteryChanged(status: com.nutorrent.core.device.BatteryStatus, pauseOnLow: Boolean, pauseOnPowerSave: Boolean) {
-        val shouldPause = (pauseOnLow && status.isLowBattery) || (pauseOnPowerSave && status.isPowerSaveMode)
-        if (shouldPause != batteryPaused) {
+    fun onBatteryChanged(
+        status: com.nutorrent.core.device.BatteryStatus,
+        pauseOnLow: Boolean,
+        pauseOnPowerSave: Boolean,
+        batteryThresholdPct: Int = 15,
+        downloadOnlyWhileCharging: Boolean = false
+    ) {
+        val isLow = status.batteryPct < batteryThresholdPct && !status.isCharging
+        val notCharging = downloadOnlyWhileCharging && !status.isCharging
+        val powerSave = pauseOnPowerSave && status.isPowerSaveMode
+
+        val shouldPause = (pauseOnLow && isLow) || powerSave || notCharging
+        val reason = when {
+            notCharging -> com.nutorrent.core.model.PauseReason.RULE_NOT_CHARGING
+            pauseOnLow && isLow -> com.nutorrent.core.model.PauseReason.RULE_LOW_BATTERY
+            powerSave -> com.nutorrent.core.model.PauseReason.RULE_BATTERY_SAVER
+            else -> com.nutorrent.core.model.PauseReason.NONE
+        }
+
+        if (shouldPause != batteryPaused || (shouldPause && reason != currentBatteryPauseReason)) {
             batteryPaused = shouldPause
-            Lg.i(LogCategory.ENGINE, "Battery status updated: shouldPause=$shouldPause (level=${status.batteryPct}%, powerSave=${status.isPowerSaveMode})")
+            currentBatteryPauseReason = reason
+            Lg.i(LogCategory.ENGINE, "Battery status updated: shouldPause=$shouldPause, reason=$reason (level=${status.batteryPct}%, charging=${status.isCharging}, powerSave=${status.isPowerSaveMode})")
             if (shouldPause) {
                 for (session in sessions.values) {
-                    if (session.state.value.isActive) {
-                        session.pause()
+                    if (session.state.value.isActive && session.pauseReason.value != com.nutorrent.core.model.PauseReason.USER_MANUAL) {
+                        session.pause(reason)
                     }
                 }
             } else {
+                // Resume ONLY sessions paused by battery rules; NEVER override manual pause!
+                for (session in sessions.values) {
+                    val pr = session.pauseReason.value
+                    if (pr == com.nutorrent.core.model.PauseReason.RULE_LOW_BATTERY ||
+                        pr == com.nutorrent.core.model.PauseReason.RULE_BATTERY_SAVER ||
+                        pr == com.nutorrent.core.model.PauseReason.RULE_NOT_CHARGING
+                    ) {
+                        session.setQueued()
+                    }
+                }
                 processQueue()
             }
         }
@@ -293,20 +361,36 @@ class TorrentEngine(
     fun onNetworkChanged(isWifi: Boolean, isConnected: Boolean) {
         Lg.d(LogCategory.ENGINE, "Network changed: isWifi=$isWifi, isConnected=$isConnected")
         isWifiConnected = isWifi
+        isNetworkConnected = isConnected
         val targetPeerLimit = if (isWifi) maxOf(defaultMaxPeerConnections, 50) else defaultMaxPeerConnections
         for (session in sessions.values) {
             session.updateMaxPeerConnections(targetPeerLimit)
         }
 
-        if (!isConnected || (isWifiOnly && !isWifi)) {
+        val isBlocked = !isConnected || (isWifiOnly && !isWifi)
+        val reason = if (isWifiOnly && !isWifi) {
+            com.nutorrent.core.model.PauseReason.RULE_WIFI_ONLY
+        } else {
+            com.nutorrent.core.model.PauseReason.RULE_MOBILE_DATA
+        }
+
+        if (isBlocked) {
             // Pause active downloading sessions
             for (session in sessions.values) {
-                if (session.state.value.isActive) {
-                    session.pause()
+                if (session.state.value.isActive && session.pauseReason.value != com.nutorrent.core.model.PauseReason.USER_MANUAL) {
+                    session.pause(reason)
                 }
             }
         } else {
-            // Auto-resume paused sessions if network recovered
+            // Auto-resume ONLY sessions paused by network rules; NEVER touch USER_MANUAL!
+            for (session in sessions.values) {
+                val pr = session.pauseReason.value
+                if (pr == com.nutorrent.core.model.PauseReason.RULE_WIFI_ONLY ||
+                    pr == com.nutorrent.core.model.PauseReason.RULE_MOBILE_DATA
+                ) {
+                    session.setQueued()
+                }
+            }
             processQueue()
             for (session in sessions.values) {
                 if (session.state.value.isActive) {
@@ -317,7 +401,10 @@ class TorrentEngine(
     }
 
     fun setWifiOnlyMode(enabled: Boolean) {
-        isWifiOnly = enabled
+        if (isWifiOnly != enabled) {
+            isWifiOnly = enabled
+            onNetworkChanged(isWifi = isWifiConnected, isConnected = isNetworkConnected)
+        }
     }
 
     fun setLpdEnabled(enabled: Boolean) {
@@ -336,6 +423,8 @@ class TorrentEngine(
     fun startMetadataFetch(
         torrentId: TorrentId,
         trackers: List<String>,
+        peerHints: List<String> = emptyList(),
+        exactSources: List<String> = emptyList(),
         onResolved: suspend (TorrentMetadata, ByteArray) -> Unit
     ): com.nutorrent.torrent.metadata.MagnetMetadataFetcher {
         metadataFetchers[torrentId]?.stop()
@@ -345,6 +434,8 @@ class TorrentEngine(
             trackerClient = trackerClient ?: com.nutorrent.torrent.tracker.DefaultTrackerClient(),
             dhtNode = dhtNode,
             scope = engineScope,
+            peerHints = peerHints,
+            exactSources = exactSources,
             onResolved = { meta, raw ->
                 metadataFetchers.remove(torrentId)
                 _metadataFetchersFlow.value = metadataFetchers.toMap()

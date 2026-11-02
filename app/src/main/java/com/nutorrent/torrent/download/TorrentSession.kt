@@ -2,6 +2,7 @@ package com.nutorrent.torrent.download
 
 import com.nutorrent.core.model.AppError
 import com.nutorrent.core.model.BlockRequest
+import com.nutorrent.core.model.PauseReason
 import com.nutorrent.core.model.PeerBitfield
 import com.nutorrent.core.model.PeerStateInfo
 import com.nutorrent.core.model.TorrentMetadata
@@ -10,6 +11,8 @@ import com.nutorrent.core.model.TorrentState
 import com.nutorrent.core.model.TrackerInfo
 import com.nutorrent.core.util.Lg
 import com.nutorrent.core.util.LogCategory
+import com.nutorrent.data.storage.FastResumeData
+import com.nutorrent.data.storage.FastResumeManager
 import com.nutorrent.data.storage.TorrentStorage
 import com.nutorrent.torrent.peer.PeerConnection
 import com.nutorrent.torrent.peer.PeerConnectionListener
@@ -28,16 +31,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
 
 class TorrentSession(
     val metadata: TorrentMetadata,
-    val storage: TorrentStorage,
+    var storage: TorrentStorage,
     val trackerClient: TrackerClient = DefaultTrackerClient(),
     private val scope: CoroutineScope,
-    maxPeerConnections: Int = 30,
+    maxPeerConnections: Int = 60,
     val bandwidthManager: com.nutorrent.torrent.network.BandwidthManager? = null,
     val dhtNode: com.nutorrent.torrent.dht.DhtNode? = null,
     val listenPort: Int = 6881
@@ -59,10 +63,23 @@ class TorrentSession(
     private val _state = MutableStateFlow(TorrentState.QUEUED)
     val state: StateFlow<TorrentState> = _state.asStateFlow()
 
+    private val _pauseReason = MutableStateFlow(PauseReason.NONE)
+    val pauseReason: StateFlow<PauseReason> = _pauseReason.asStateFlow()
+
+    var onStateChanged: ((TorrentState) -> Unit)? = null
+
     private fun setState(newState: TorrentState) {
-        if (_state.value != newState) {
-            Lg.i(LogCategory.ENGINE, "[TORRENT_STATE] ${metadata.name} -> $newState")
-            _state.value = newState
+        val changed = synchronized(this) {
+            if (_state.value != newState) {
+                Lg.i(LogCategory.ENGINE, "[TORRENT_STATE] ${metadata.name} -> $newState")
+                _state.value = newState
+                true
+            } else {
+                false
+            }
+        }
+        if (changed) {
+            onStateChanged?.invoke(newState)
         }
     }
 
@@ -78,12 +95,41 @@ class TorrentSession(
     val peers: StateFlow<List<PeerStateInfo>> = _peers.asStateFlow()
 
     private val _trackers = MutableStateFlow<List<TrackerInfo>>(
-        (metadata.announceList + com.nutorrent.torrent.metadata.MagnetMetadataFetcher.FALLBACK_TRACKERS).distinct().map { TrackerInfo(url = it) }
+        (metadata.announceList + com.nutorrent.torrent.metadata.MagnetMetadataFetcher.FALLBACK_TRACKERS + com.nutorrent.torrent.tracker.CommunityTrackersSync.getCachedTrackers()).distinct().map { TrackerInfo(url = it) }
     )
     val trackers: StateFlow<List<TrackerInfo>> = _trackers.asStateFlow()
 
     private val _verificationProgress = MutableStateFlow(0f)
     val verificationProgress: StateFlow<Float> = _verificationProgress.asStateFlow()
+
+    private val _lastError = MutableStateFlow<AppError?>(null)
+    val lastError: StateFlow<AppError?> = _lastError.asStateFlow()
+
+    internal var trackerReportedSeeds: Int? = null
+
+    fun setLastError(error: AppError?) {
+        _lastError.value = error
+    }
+
+    fun setError(error: AppError) {
+        val changed = synchronized(this) {
+            activeJob?.cancel()
+            statsJob?.cancel()
+            announceJob?.cancel()
+            dhtJob?.cancel()
+            peerManager.disconnectAll()
+            storage.close()
+            _lastError.value = error
+            _pauseReason.value = PauseReason.NONE
+            val stateChanged = (_state.value != TorrentState.ERROR)
+            _state.value = TorrentState.ERROR
+            _progress.value = _progress.value.copy(downloadSpeedBps = 0L, etaSeconds = null, connectedPeers = 0)
+            stateChanged
+        }
+        if (changed) {
+            onStateChanged?.invoke(TorrentState.ERROR)
+        }
+    }
 
     private var activeJob: Job? = null
     private var statsJob: Job? = null
@@ -162,13 +208,28 @@ class TorrentSession(
 
                         if (pieceManager.isComplete()) {
                             onDownloadCompleted()
+                        } else if (pieceManager.completedPiecesCount % 10 == 0) {
+                            FastResumeManager.save(
+                                FastResumeData(
+                                    infoHash = metadata.torrentId.hex,
+                                    isComplete = false,
+                                    completedPieces = pieceManager.completedPiecesCount,
+                                    totalPieces = metadata.piecesCount,
+                                    verifiedBytes = pieceManager.verifiedBytes,
+                                    totalBytes = metadata.totalLength,
+                                    bitfield = pieceManager.ourBitfield.bytes.clone()
+                                )
+                            )
                         }
-                    } catch (e: com.nutorrent.core.model.AppError.StorageFull) {
-                        Lg.e(LogCategory.STORAGE, "Disk space full (< 15MB available), pausing torrent ${metadata.name}", e)
-                        setState(TorrentState.ERROR)
-                        pause()
+                    } catch (e: AppError) {
+                        pieceManager.onPieceWriteFailed(verifiedResult.pieceIndex)
+                        Lg.e(LogCategory.STORAGE, "Storage error writing piece ${verifiedResult.pieceIndex}: ${e.userMessage}", e)
+                        setError(e)
                     } catch (e: Exception) {
+                        pieceManager.onPieceWriteFailed(verifiedResult.pieceIndex)
                         Lg.e(LogCategory.STORAGE, "Failed writing piece ${verifiedResult.pieceIndex}", e)
+                        val appError = AppError.fromThrowable(e, storage.getAvailableSpace(), metadata.totalLength)
+                        setError(appError)
                     }
                 }
             }
@@ -209,70 +270,232 @@ class TorrentSession(
         )
     }
 
+    /**
+     * Instantly sets the session to completed/seeding state from cached data without disk verification.
+     */
+    @Synchronized
+    fun fastResumeSeeding() {
+        pieceManager.markAllPiecesComplete()
+        _verificationProgress.value = 1f
+        _progress.value = _progress.value.copy(
+            verifiedBytes = metadata.totalLength,
+            completedPieces = metadata.piecesCount,
+            downloadSpeedBps = 0L,
+            etaSeconds = null
+        )
+        _state.value = TorrentState.SEEDING
+    }
+
+    /**
+     * Restores state from cached fast-resume data.
+     */
+    @Synchronized
+    fun restoreFastResume(resumeData: FastResumeData) {
+        if (resumeData.isComplete) {
+            fastResumeSeeding()
+        } else {
+            pieceManager.restoreFromBitfield(resumeData.bitfield)
+            _verificationProgress.value = 1f
+            _progress.value = _progress.value.copy(
+                verifiedBytes = pieceManager.verifiedBytes,
+                completedPieces = pieceManager.completedPiecesCount
+            )
+        }
+    }
+
     fun start() {
-        if (_state.value.isActive) return
-        activeJob?.cancel()
+        data class StartPlan(
+            val targetState: TorrentState,
+            val cachedResume: FastResumeData?,
+            val isAlreadyComplete: Boolean
+        )
 
-        setState(TorrentState.VERIFYING)
-        activeJob = scope.launch(Dispatchers.IO) {
-            try {
-                _verificationProgress.value = 0f
-                storage.prepare()
+        val plan: StartPlan? = synchronized(this) {
+            if (_state.value.isActive) return
+            _pauseReason.value = PauseReason.NONE
+            _lastError.value = null
+            activeJob?.cancel()
 
-                // Check stored pieces on start with progress callback
-                storage.verifyStoredPieces(
-                    onProgress = { _, _, pct ->
-                        _verificationProgress.value = pct / 100f
-                    },
-                    onPieceResult = { index, isComplete ->
-                        if (isComplete) {
-                            pieceManager.markPieceCompleteFromStorage(index)
-                        }
-                    }
-                )
+            // Synchronously determine and set the active state so the UI and engine immediately reflect it without delay
+            val cachedResume = FastResumeManager.load(metadata.torrentId.hex)
+            val isAlreadyComplete = cachedResume?.isComplete == true || pieceManager.isComplete() || _state.value == TorrentState.SEEDING || _state.value == TorrentState.COMPLETED
+
+            val targetState = if (isAlreadyComplete) {
+                fastResumeSeeding()
+                TorrentState.SEEDING
+            } else if (cachedResume != null && !cachedResume.isComplete && (cachedResume.completedPieces > 0 || pieceManager.completedPiecesCount > 0)) {
+                if (pieceManager.completedPiecesCount == 0 && cachedResume.bitfield.isNotEmpty()) {
+                    pieceManager.restoreFromBitfield(cachedResume.bitfield)
+                }
                 _verificationProgress.value = 1f
-                updateProgressSnapshot()
+                _progress.value = _progress.value.copy(
+                    verifiedBytes = pieceManager.verifiedBytes,
+                    completedPieces = pieceManager.completedPiecesCount
+                )
+                TorrentState.DISCOVERING_PEERS
+            } else {
+                // New torrent or uncached: start directly in DISCOVERING_PEERS without flashing VERIFYING
+                _verificationProgress.value = 1f
+                TorrentState.DISCOVERING_PEERS
+            }
+
+            _state.value = targetState
+            StartPlan(targetState, cachedResume, isAlreadyComplete)
+        }
+
+        if (plan == null) return
+
+        Lg.i(LogCategory.ENGINE, "[TORRENT_STATE] ${metadata.name} -> ${plan.targetState}")
+        onStateChanged?.invoke(plan.targetState)
+
+        val cachedResume = plan.cachedResume
+        val isAlreadyComplete = plan.isAlreadyComplete
+
+        val job = scope.launch(Dispatchers.IO) {
+            try {
+                storage.prepare()
+                ensureActive()
+
+                if (isAlreadyComplete) {
+                    Lg.i(LogCategory.STORAGE, "Instant fast-resuming completed torrent ${metadata.name} without verification!")
+                    FastResumeManager.save(
+                        FastResumeData(
+                            infoHash = metadata.torrentId.hex,
+                            isComplete = true,
+                            completedPieces = metadata.piecesCount,
+                            totalPieces = metadata.piecesCount,
+                            verifiedBytes = metadata.totalLength,
+                            totalBytes = metadata.totalLength,
+                            bitfield = pieceManager.ourBitfield.bytes.clone()
+                        )
+                    )
+                } else if (cachedResume != null && !cachedResume.isComplete && pieceManager.completedPiecesCount > 0) {
+                    Lg.i(LogCategory.STORAGE, "Fast-resuming partial torrent ${metadata.name} from cached bitfield")
+                    _verificationProgress.value = 1f
+                } else if (storage.areFilesComplete()) {
+                    Lg.i(LogCategory.STORAGE, "Files are complete on disk for ${metadata.name}. Fast-resuming to seeding!")
+                    pieceManager.markAllPiecesComplete()
+                    _verificationProgress.value = 1f
+                    _progress.value = _progress.value.copy(
+                        verifiedBytes = metadata.totalLength,
+                        completedPieces = metadata.piecesCount,
+                        downloadSpeedBps = 0L,
+                        etaSeconds = null
+                    )
+                    FastResumeManager.save(
+                        FastResumeData(
+                            infoHash = metadata.torrentId.hex,
+                            isComplete = true,
+                            completedPieces = metadata.piecesCount,
+                            totalPieces = metadata.piecesCount,
+                            verifiedBytes = metadata.totalLength,
+                            totalBytes = metadata.totalLength,
+                            bitfield = pieceManager.ourBitfield.bytes.clone()
+                        )
+                    )
+                    setState(TorrentState.SEEDING)
+                } else if (!storage.hasExistingDiskData()) {
+                    Lg.i(LogCategory.STORAGE, "New/empty torrent ${metadata.name}: beginning download immediately without disk scan")
+                    _verificationProgress.value = 1f
+                } else {
+                    // Only for un-cached pre-existing partial data on disk do we verify
+                    _verificationProgress.value = 0f
+                    setState(TorrentState.VERIFYING)
+
+                    storage.verifyStoredPieces(
+                        onProgress = { _, _, pct ->
+                            _verificationProgress.value = pct / 100f
+                        },
+                        onPieceResult = { index, isComplete ->
+                            if (isComplete) {
+                                pieceManager.markPieceCompleteFromStorage(index)
+                            } else {
+                                pieceManager.markPieceIncomplete(index)
+                            }
+                        }
+                    )
+                    ensureActive()
+                    if (!isActive || _state.value == TorrentState.PAUSED || _state.value == TorrentState.QUEUED) return@launch
+
+                    _verificationProgress.value = 1f
+                    updateProgressSnapshot()
+
+                    // Save fast-resume immediately so subsequent startups are instant
+                    FastResumeManager.save(
+                        FastResumeData(
+                            infoHash = metadata.torrentId.hex,
+                            isComplete = pieceManager.isComplete(),
+                            completedPieces = pieceManager.completedPiecesCount,
+                            totalPieces = metadata.piecesCount,
+                            verifiedBytes = pieceManager.verifiedBytes,
+                            totalBytes = metadata.totalLength,
+                            bitfield = pieceManager.ourBitfield.bytes.clone()
+                        )
+                    )
+                }
+
+                ensureActive()
+                if (!isActive || _state.value == TorrentState.PAUSED || _state.value == TorrentState.QUEUED || _state.value == TorrentState.ERROR) return@launch
 
                 if (pieceManager.isComplete()) {
                     setState(TorrentState.SEEDING)
-                    startStatsTicker()
-                    launch { announceToTrackers(TrackerEvent.STARTED) }
-                    queryDhtForPeers()
-                    peerManager.reconnectIfNeeded()
-                } else {
-                    setState(TorrentState.DISCOVERING_PEERS)
-                    startStatsTicker()
-                    launch { announceToTrackers(TrackerEvent.STARTED) }
-                    queryDhtForPeers()
-                    if (_state.value == TorrentState.DISCOVERING_PEERS) {
-                        setState(TorrentState.DOWNLOADING)
-                    }
-                    peerManager.reconnectIfNeeded()
-                    for (peer in peerManager.getActiveConnections()) {
-                        requestWorkForPeer(peer)
-                    }
+                } else if (_state.value == TorrentState.DISCOVERING_PEERS || _state.value == TorrentState.VERIFYING) {
+                    setState(TorrentState.DOWNLOADING)
                 }
 
-                // Periodic loop: choking (5s), tracker announce (20-30s), PEX (60s)
+                ensureActive()
+                if (!isActive || _state.value == TorrentState.PAUSED || _state.value == TorrentState.QUEUED || _state.value == TorrentState.ERROR) return@launch
+
+                startStatsTicker()
+                launch { announceToTrackers(TrackerEvent.STARTED) }
+                queryDhtForPeers()
+                peerManager.reconnectIfNeeded()
+                for (peer in peerManager.getActiveConnections()) {
+                    requestWorkForPeer(peer)
+                }
+
+                // Periodic maintenance loop: choking, peer reconnects, stalled request recovery, peer cycling, PEX
                 var loopCounter = 0
-                while (isActive && (_state.value == TorrentState.DOWNLOADING || _state.value == TorrentState.SEEDING)) {
-                    delay(5_000L)
+                while (isActive && (_state.value == TorrentState.DOWNLOADING || _state.value == TorrentState.SEEDING || _state.value == TorrentState.DISCOVERING_PEERS)) {
+                    val isLowPeers = peerManager.activeCount < 8
+                    val delayMs = if (isLowPeers) 2500L else 5000L
+                    delay(delayMs)
                     loopCounter++
                     uploadManager.updateChoking(peerManager.getActiveConnections(), isSeeding = _state.value == TorrentState.SEEDING)
                     
                     peerManager.reconnectIfNeeded()
 
-                    // Aggressive Peer Cycling:
-                    // Disconnect peers that have kept us choked for > 30s with no in-flight requests,
-                    // so that fresh peer candidates can be rotated in.
+                    // Stalled Request Recovery:
+                    // Sweep requests that have stalled (> 7s) so blocks can be reassigned immediately to fast seeders
                     val now = System.currentTimeMillis()
                     val active = peerManager.getActiveConnections()
+                    for (p in active) {
+                        val stalled = p.sweepStalledRequests(7_000L)
+                        if (stalled.isNotEmpty()) {
+                            for (req in stalled) {
+                                pieceManager.onBlockRequestFailed(req.pieceIndex, req.beginOffset)
+                            }
+                        }
+                    }
+
+                    // Feed any peers with spare pipeline capacity or newly freed blocks
+                    if (_state.value == TorrentState.DOWNLOADING || _state.value == TorrentState.DISCOVERING_PEERS) {
+                        for (p in active) {
+                            if (!p.isChokingUs || p.allowedFastPieces.isNotEmpty()) {
+                                requestWorkForPeer(p)
+                            }
+                        }
+                    }
+
+                    // Aggressive Peer Cycling:
+                    // Disconnect peers that have kept us choked for > 25s with no in-flight requests,
+                    // so that fresh peer candidates can be rotated in.
                     val hasQueuedCandidates = peerManager.totalKnownCount > peerManager.activeCount
                     for (peer in active) {
                         if (peer.isChokingUs &&
                             peer.pendingRequests.isEmpty() &&
                             peer.chokeReceivedAt > 0L &&
-                            (now - peer.chokeReceivedAt) > 30_000L &&
+                            (now - peer.chokeReceivedAt) > 25_000L &&
                             peer.allowedFastPieces.isEmpty() &&
                             hasQueuedCandidates
                         ) {
@@ -281,28 +504,52 @@ class TorrentSession(
                         }
                     }
 
-                    val isDownloading = _state.value == TorrentState.DOWNLOADING
+                    val isDownloading = _state.value == TorrentState.DOWNLOADING || _state.value == TorrentState.DISCOVERING_PEERS
                     val isStalledOrLow = isDownloading && (_progress.value.downloadSpeedBps == 0L || peerManager.activeCount < 8)
 
-                    if (isStalledOrLow && loopCounter % 4 == 0) { // Every 20s if stalled or low active peers
+                    // Re-announce: if low peers, every 15s (6 cycles of 2.5s); otherwise every ~30s-60s
+                    val announceCadence = if (isLowPeers) 6 else 12
+                    if (isStalledOrLow && loopCounter % announceCadence == 0) {
                         launch { announceToTrackers(TrackerEvent.REGULAR) }
                         queryDhtForPeers()
-                    } else if (loopCounter % 6 == 0) { // 30s regular
+                    } else if (loopCounter % 12 == 0) {
                         if (peerManager.activeCount < 5) {
                             launch { announceToTrackers(TrackerEvent.REGULAR) }
                             queryDhtForPeers()
                         }
                     }
-                    if (loopCounter % 12 == 0) { // 60s
+                    if (loopCounter % 20 == 0) {
                         peerManager.broadcastPex(PexMessage(added = peerManager.getConnectedEndpoints()))
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 if (isActive) {
                     Lg.e(LogCategory.ENGINE, "Session error", e)
-                    setState(TorrentState.ERROR)
+                    val appError = if (e is AppError) e else AppError.fromThrowable(e, storage.getAvailableSpace(), metadata.totalLength)
+                    setError(appError)
                 }
             }
+        }
+
+        synchronized(this) {
+            if (_state.value != plan.targetState) {
+                job.cancel()
+            } else {
+                activeJob = job
+            }
+        }
+    }
+
+    private fun calculateOptimalPipeline(peer: PeerConnection): Int {
+        val success = peer.successfulBlocksCount
+        return when {
+            peer.currentDownloadRateBps > 30_000_000L || success > 500 -> 384 // ~6.0 MB in-flight for 5G/Gigabit Wi-Fi
+            peer.currentDownloadRateBps > 15_000_000L || success > 250 -> 256 // ~4.0 MB in-flight
+            peer.currentDownloadRateBps > 5_000_000L || success > 100 -> 128 // ~2.0 MB in-flight
+            peer.currentDownloadRateBps > 1_000_000L || success > 30 -> 64 // ~1.0 MB in-flight
+            else -> 32          // ~512 KB base pipeline
         }
     }
 
@@ -318,32 +565,50 @@ class TorrentSession(
 
         if (peer.isChokingUs) {
             if (peer.allowedFastPieces.isNotEmpty()) {
-                while (peer.pendingRequests.size < 4) {
+                val targetAllowedFast = when {
+                    peer.successfulBlocksCount > 100 -> 64
+                    peer.successfulBlocksCount > 30 -> 32
+                    else -> 16
+                }
+                val toRequest = mutableListOf<BlockRequest>()
+                while (peer.pendingRequests.size + toRequest.size < targetAllowedFast) {
                     val req = pieceManager.requestNextBlockForAllowedFast(peer.peerBitfield, peer.allowedFastPieces) ?: break
-                    if (peer.pendingRequests.containsKey(req)) break
-                    val sent = peer.sendRequest(req)
-                    if (!sent) {
-                        pieceManager.onBlockRequestFailed(req.pieceIndex, req.beginOffset)
-                        break
+                    if (peer.pendingRequests.containsKey(req) || toRequest.contains(req)) break
+                    toRequest.add(req)
+                }
+                if (toRequest.isNotEmpty()) {
+                    val sentCount = peer.sendRequests(toRequest)
+                    if (sentCount < toRequest.size) {
+                        for (i in sentCount until toRequest.size) {
+                            val failed = toRequest[i]
+                            pieceManager.onBlockRequestFailed(failed.pieceIndex, failed.beginOffset)
+                        }
                     }
                 }
             }
             return
         }
 
-        // Request blocks up to pipeline depth of 8
-        while (peer.pendingRequests.size < 8) {
+        // Active unchoked peer: dynamically scale request pipeline to fully saturate available bandwidth
+        val targetPipeline = calculateOptimalPipeline(peer)
+        val toRequest = mutableListOf<BlockRequest>()
+        while (peer.pendingRequests.size + toRequest.size < targetPipeline) {
             val req = pieceManager.requestNextBlockForPeer(peer.peerBitfield) ?: break
-            if (peer.pendingRequests.containsKey(req)) break
-            val sent = peer.sendRequest(req)
-            if (!sent) {
-                pieceManager.onBlockRequestFailed(req.pieceIndex, req.beginOffset)
-                break
+            if (peer.pendingRequests.containsKey(req) || toRequest.contains(req)) break
+            toRequest.add(req)
+        }
+        if (toRequest.isNotEmpty()) {
+            val sentCount = peer.sendRequests(toRequest)
+            if (sentCount < toRequest.size) {
+                for (i in sentCount until toRequest.size) {
+                    val failed = toRequest[i]
+                    pieceManager.onBlockRequestFailed(failed.pieceIndex, failed.beginOffset)
+                }
             }
         }
     }
 
-    private suspend fun announceToTrackers(event: TrackerEvent) {
+    internal suspend fun announceToTrackers(event: TrackerEvent) {
         val currentTrackers = _trackers.value
         val updatedTrackers = currentTrackers.toMutableList()
 
@@ -367,10 +632,14 @@ class TorrentSession(
                                 event = event
                             )
                             val resp = trackerClient.announce(req)
+                            if (resp.seeders != null && resp.seeders >= 0) {
+                                trackerReportedSeeds = resp.seeders
+                            }
                             synchronized(updatedTrackers) {
                                 updatedTrackers[idx] = trackerInfo.copy(
                                     status = "Online",
                                     peersCount = resp.peers.size,
+                                    seedsCount = resp.seeders,
                                     intervalSeconds = resp.intervalSeconds,
                                     lastError = null
                                 )
@@ -450,10 +719,14 @@ class TorrentSession(
             while (isActive) {
                 delay(1000L) // 1 second ticker
 
-                val speed = speedCalculator.addSample(totalRawDownloadedBytes.get())
+                val isSeeding = _state.value == TorrentState.SEEDING
+                val speed = if (isSeeding) 0L else speedCalculator.addSample(totalRawDownloadedBytes.get())
                 val uploadSpeed = uploadSpeedCalculator.addSample(uploadManager.totalUploadedBytes.get())
-                val remaining = metadata.totalLength - pieceManager.verifiedBytes
-                val eta = speedCalculator.calculateEta(remaining, speed)
+                val remaining = (metadata.totalLength - pieceManager.verifiedBytes).coerceAtLeast(0L)
+                val eta = if (isSeeding || remaining == 0L) null else speedCalculator.calculateEta(remaining, speed)
+
+                val connSeeds = peerManager.connectedSeedsCount
+                val availSeeds = trackerReportedSeeds ?: if (connSeeds > 0) connSeeds else null
 
                 _progress.value = TorrentProgress(
                     downloadedBytes = totalRawDownloadedBytes.get(),
@@ -466,7 +739,9 @@ class TorrentSession(
                     uploadSpeedBps = uploadSpeed,
                     etaSeconds = eta,
                     connectedPeers = peerManager.activeCount,
-                    totalPeers = peerManager.totalKnownCount
+                    totalPeers = peerManager.totalKnownCount,
+                    connectedSeeds = connSeeds,
+                    availableSeeds = availSeeds
                 )
 
                 _peers.value = peerManager.getPeerStateInfos()
@@ -476,44 +751,90 @@ class TorrentSession(
 
     private suspend fun onDownloadCompleted() {
         setState(TorrentState.SEEDING)
+        _lastError.value = null
         _progress.value = _progress.value.copy(
             verifiedBytes = metadata.totalLength,
             completedPieces = metadata.piecesCount,
             downloadSpeedBps = 0L,
-            etaSeconds = 0L
+            etaSeconds = null
         )
         Lg.i(LogCategory.ENGINE, "Torrent ${metadata.name} completed download. Now SEEDING to peers!")
+        FastResumeManager.save(
+            FastResumeData(
+                infoHash = metadata.torrentId.hex,
+                isComplete = true,
+                completedPieces = metadata.piecesCount,
+                totalPieces = metadata.piecesCount,
+                verifiedBytes = metadata.totalLength,
+                totalBytes = metadata.totalLength,
+                bitfield = pieceManager.ourBitfield.bytes.clone()
+            )
+        )
         announceToTrackers(TrackerEvent.COMPLETED)
     }
 
-    fun pause() {
-        if (_state.value == TorrentState.PAUSED) return
-        activeJob?.cancel()
-        statsJob?.cancel()
-        announceJob?.cancel()
-        dhtJob?.cancel()
-        peerManager.disconnectAll()
-        storage.close()
-        setState(TorrentState.PAUSED)
-        _progress.value = _progress.value.copy(downloadSpeedBps = 0L, etaSeconds = null, connectedPeers = 0)
+    fun pause(reason: PauseReason = PauseReason.USER_MANUAL) {
+        val changed = synchronized(this) {
+            if (_state.value == TorrentState.PAUSED && _pauseReason.value == reason) return
+            activeJob?.cancel()
+            statsJob?.cancel()
+            announceJob?.cancel()
+            dhtJob?.cancel()
+            peerManager.disconnectAll()
+            storage.close()
+            _pauseReason.value = reason
+            val wasNotPaused = (_state.value != TorrentState.PAUSED)
+            _state.value = TorrentState.PAUSED
+            _progress.value = _progress.value.copy(downloadSpeedBps = 0L, etaSeconds = null, connectedPeers = 0)
+            wasNotPaused
+        }
+        if (changed) {
+            onStateChanged?.invoke(TorrentState.PAUSED)
+        }
+    }
+
+    fun setQueued() {
+        val changed = synchronized(this) {
+            if (_state.value == TorrentState.QUEUED) return
+            activeJob?.cancel()
+            statsJob?.cancel()
+            announceJob?.cancel()
+            dhtJob?.cancel()
+            peerManager.disconnectAll()
+            storage.close()
+            _pauseReason.value = PauseReason.QUEUED
+            _state.value = TorrentState.QUEUED
+            _progress.value = _progress.value.copy(downloadSpeedBps = 0L, etaSeconds = null, connectedPeers = 0)
+            true
+        }
+        if (changed) {
+            onStateChanged?.invoke(TorrentState.QUEUED)
+        }
     }
 
     fun resume() {
-        if (_state.value == TorrentState.PAUSED) {
+        if (_state.value == TorrentState.PAUSED || _state.value == TorrentState.ERROR || _state.value == TorrentState.QUEUED) {
+            _lastError.value = null
+            _pauseReason.value = PauseReason.NONE
             start()
         }
     }
 
     fun forceRecheck(): Job {
-        val wasActive = _state.value.isActive
-        activeJob?.cancel()
-        statsJob?.cancel()
-        announceJob?.cancel()
-        dhtJob?.cancel()
-        peerManager.disconnectAll()
-        setState(TorrentState.VERIFYING)
-        _verificationProgress.value = 0f
-        pieceManager.resetAllPieces()
+        val wasActive = synchronized(this) {
+            val active = _state.value.isActive
+            activeJob?.cancel()
+            statsJob?.cancel()
+            announceJob?.cancel()
+            dhtJob?.cancel()
+            peerManager.disconnectAll()
+            FastResumeManager.remove(metadata.torrentId.hex)
+            _state.value = TorrentState.VERIFYING
+            _verificationProgress.value = 0f
+            pieceManager.resetAllPieces()
+            active
+        }
+        onStateChanged?.invoke(TorrentState.VERIFYING)
 
         val job = scope.launch(Dispatchers.IO) {
             try {
@@ -525,6 +846,8 @@ class TorrentSession(
                     onPieceResult = { index, isComplete ->
                         if (isComplete) {
                             pieceManager.markPieceCompleteFromStorage(index)
+                        } else {
+                            pieceManager.markPieceIncomplete(index)
                         }
                     }
                 )
@@ -535,6 +858,17 @@ class TorrentSession(
                 )
 
                 if (pieceManager.isComplete()) {
+                    FastResumeManager.save(
+                        FastResumeData(
+                            infoHash = metadata.torrentId.hex,
+                            isComplete = true,
+                            completedPieces = pieceManager.completedPiecesCount,
+                            totalPieces = metadata.piecesCount,
+                            verifiedBytes = pieceManager.verifiedBytes,
+                            totalBytes = metadata.totalLength,
+                            bitfield = pieceManager.ourBitfield.bytes.clone()
+                        )
+                    )
                     setState(TorrentState.SEEDING)
                     startStatsTicker()
                     announceJob = launch { announceToTrackers(TrackerEvent.STARTED) }
@@ -552,21 +886,45 @@ class TorrentSession(
                 throw e
             } catch (e: Exception) {
                 Lg.e(LogCategory.STORAGE, "Force recheck failed for ${metadata.name}", e)
-                setState(TorrentState.ERROR)
+                val appError = if (e is AppError) e else AppError.fromThrowable(e, storage.getAvailableSpace(), metadata.totalLength)
+                setError(appError)
             }
         }
-        activeJob = job
+        synchronized(this) {
+            activeJob = job
+        }
         return job
     }
 
     fun stop() {
-        activeJob?.cancel()
-        statsJob?.cancel()
-        announceJob?.cancel()
-        dhtJob?.cancel()
-        peerManager.disconnectAll()
-        storage.close()
-        setState(TorrentState.QUEUED)
+        val changed = synchronized(this) {
+            if (pieceManager.completedPiecesCount > 0) {
+                FastResumeManager.save(
+                    FastResumeData(
+                        infoHash = metadata.torrentId.hex,
+                        isComplete = pieceManager.isComplete(),
+                        completedPieces = pieceManager.completedPiecesCount,
+                        totalPieces = metadata.piecesCount,
+                        verifiedBytes = pieceManager.verifiedBytes,
+                        totalBytes = metadata.totalLength,
+                        bitfield = pieceManager.ourBitfield.bytes.clone()
+                    )
+                )
+            }
+            activeJob?.cancel()
+            statsJob?.cancel()
+            announceJob?.cancel()
+            dhtJob?.cancel()
+            peerManager.disconnectAll()
+            storage.close()
+            _pauseReason.value = PauseReason.NONE
+            val wasNotQueued = (_state.value != TorrentState.QUEUED)
+            _state.value = TorrentState.QUEUED
+            wasNotQueued
+        }
+        if (changed) {
+            onStateChanged?.invoke(TorrentState.QUEUED)
+        }
     }
 
     fun updateMaxPeerConnections(limit: Int) {

@@ -16,9 +16,9 @@ import kotlin.random.Random
  */
 class UploadManager(
     val metadata: TorrentMetadata,
-    val storage: TorrentStorage,
+    var storage: TorrentStorage,
     val pieceManager: PieceManager,
-    val maxUnchokeSlots: Int = 4,
+    val maxUnchokeSlots: Int = 8,
     val bandwidthManager: com.nutorrent.torrent.network.BandwidthManager? = null
 ) {
     val totalUploadedBytes = AtomicLong(0L)

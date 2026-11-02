@@ -83,4 +83,62 @@ class TorrentSessionRecheckTest {
 
         session.stop()
     }
+
+    @Test
+    fun `test force recheck demotes previously verified pieces if file is truncated or corrupted on disk`() = runTest {
+        val baseDir = tempFolder.newFolder("corrupt_recheck_test")
+        val pieceLen = 16384
+        val piece0Data = ByteArray(pieceLen) { 7.toByte() }
+        val sha0 = MessageDigest.getInstance("SHA-1").digest(piece0Data)
+
+        val meta = TorrentMetadata(
+            torrentId = TorrentId(ByteArray(20) { 5 }),
+            name = "test_corrupt.bin",
+            pieceLength = pieceLen.toLong(),
+            totalLength = pieceLen.toLong(),
+            piecesCount = 1,
+            pieceHashes = listOf(sha0),
+            files = listOf(TorrentFile(0, "test_corrupt.bin", pieceLen.toLong(), 0, pieceLen.toLong())),
+            announceList = emptyList()
+        )
+
+        val storage = FileTorrentStorage(baseDir, meta)
+        storage.prepare()
+        storage.writePiece(0L, piece0Data)
+
+        val mockTracker = object : com.nutorrent.torrent.tracker.TrackerClient {
+            override suspend fun announce(request: com.nutorrent.torrent.tracker.TrackerAnnounceRequest): com.nutorrent.torrent.tracker.TrackerAnnounceResponse {
+                return com.nutorrent.torrent.tracker.TrackerAnnounceResponse(1800, null, 0, 0, emptyList())
+            }
+        }
+
+        val session = TorrentSession(
+            metadata = meta,
+            storage = storage,
+            trackerClient = mockTracker,
+            scope = this
+        )
+
+        // 1. First recheck: piece 0 is valid and verified
+        val job1 = session.forceRecheck()
+        job1.join()
+        assertTrue(session.pieceManager.hasPiece(0))
+        assertEquals(1, session.pieceManager.completedPiecesCount)
+        assertEquals(TorrentState.SEEDING, session.state.value)
+
+        // 2. Corrupt the data on disk (overwrite with garbage)
+        val targetFile = java.io.File(baseDir, "test_corrupt.bin")
+        targetFile.writeBytes(ByteArray(pieceLen) { 99.toByte() })
+
+        // 3. Second recheck: piece 0 fails hash check and is downgraded
+        val job2 = session.forceRecheck()
+        job2.join()
+
+        assertFalse("Corrupted piece must not be marked complete", session.pieceManager.hasPiece(0))
+        assertEquals(0, session.pieceManager.completedPiecesCount)
+        assertEquals(0L, session.pieceManager.verifiedBytes)
+        assertNotEquals("Corrupted torrent must not remain in SEEDING state", TorrentState.SEEDING, session.state.value)
+
+        session.stop()
+    }
 }

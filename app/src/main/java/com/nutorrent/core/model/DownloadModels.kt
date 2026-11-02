@@ -31,7 +31,9 @@ data class TorrentProgress(
     val uploadSpeedBps: Long = 0,
     val etaSeconds: Long? = null,
     val connectedPeers: Int = 0,
-    val totalPeers: Int = 0
+    val totalPeers: Int = 0,
+    val connectedSeeds: Int = 0,
+    val availableSeeds: Int? = null
 ) {
     val progressFraction: Float = if (totalBytes > 0) {
         (verifiedBytes.toDouble() / totalBytes.toDouble()).coerceIn(0.0, 1.0).toFloat()
@@ -49,6 +51,7 @@ data class TrackerInfo(
     val tier: Int = 0,
     val status: String = "Not contacted",
     val peersCount: Int = 0,
+    val seedsCount: Int? = null,
     val intervalSeconds: Int = 1800,
     val minIntervalSeconds: Int? = null,
     val lastError: String? = null
@@ -67,3 +70,19 @@ data class PeerStateInfo(
     val pendingRequestsCount: Int = 0,
     val piecesCount: Int = 0
 )
+
+/**
+ * Detailed reason why a torrent is in a non-active state.
+ * Allows distinguishing user-initiated pauses from rule-based pauses,
+ * ensuring automatic rule recovery never overrides manual user decisions.
+ */
+enum class PauseReason(val label: String) {
+    NONE("Active"),
+    USER_MANUAL("Paused"),
+    RULE_WIFI_ONLY("Paused (Wi-Fi only)"),
+    RULE_MOBILE_DATA("Paused (Mobile data)"),
+    RULE_LOW_BATTERY("Paused (Low battery)"),
+    RULE_NOT_CHARGING("Paused (Not charging)"),
+    RULE_BATTERY_SAVER("Paused (Battery saver)"),
+    QUEUED("Queued")
+}
