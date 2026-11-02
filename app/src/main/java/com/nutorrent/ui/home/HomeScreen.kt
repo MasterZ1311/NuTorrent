@@ -219,6 +219,7 @@ fun HomeScreen(
     val totalDownSpeed by (app?.torrentEngine?.totalDownloadSpeedBps?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) })
     val totalUpSpeed by (app?.torrentEngine?.totalUploadSpeedBps?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) })
 
+
     val clipboardText = remember(torrents) {
         try {
             clipboardManager.getText()?.text?.trim()
@@ -635,9 +636,6 @@ fun HomeScreen(
                         )
                     }
                 } else {
-                    val app = context.applicationContext as? com.nutorrent.NuTorrentApplication
-                    val totalDownSpeed by (app?.torrentEngine?.totalDownloadSpeedBps?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) })
-                    val totalUpSpeed by (app?.torrentEngine?.totalUploadSpeedBps?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) })
                     if (downloadingCount > 0 || seedingCount > 0 || totalDownSpeed > 0L || totalUpSpeed > 0L) {
                         item(key = "networkSpeedGauge") {
                             NetworkSpeedGauge(
