@@ -115,15 +115,16 @@ class TorrentEngine(
 
     fun createSession(
         metadata: TorrentMetadata,
-        storage: TorrentStorage
+        storage: TorrentStorage,
+        initialPeers: Collection<com.nutorrent.core.model.PeerEndpoint> = emptyList()
     ): TorrentSession {
         val baseLimit = if (isWifiConnected) maxOf(defaultMaxPeerConnections, 150) else defaultMaxPeerConnections
         val allocatedPeerLimit = governor.allocatePeerLimit(baseLimit, sessions.size + 1)
         val port = if (incomingPeerServer.boundPort > 0) incomingPeerServer.boundPort else 6881
         val session = if (trackerClient != null) {
-            TorrentSession(metadata, storage, trackerClient, engineScope, allocatedPeerLimit, bandwidthManager, dhtNode = dhtNode, listenPort = port)
+            TorrentSession(metadata, storage, trackerClient, engineScope, allocatedPeerLimit, bandwidthManager, dhtNode = dhtNode, listenPort = port, initialPeers = initialPeers)
         } else {
-            TorrentSession(metadata, storage, scope = engineScope, maxPeerConnections = allocatedPeerLimit, bandwidthManager = bandwidthManager, dhtNode = dhtNode, listenPort = port)
+            TorrentSession(metadata, storage, scope = engineScope, maxPeerConnections = allocatedPeerLimit, bandwidthManager = bandwidthManager, dhtNode = dhtNode, listenPort = port, initialPeers = initialPeers)
         }
 
         val id = metadata.torrentId
@@ -429,9 +430,11 @@ class TorrentEngine(
         trackers: List<String>,
         peerHints: List<String> = emptyList(),
         exactSources: List<String> = emptyList(),
-        onResolved: suspend (TorrentMetadata, ByteArray) -> Unit
+        onResolved: suspend (TorrentMetadata, ByteArray, Set<com.nutorrent.core.model.PeerEndpoint>) -> Unit
     ): com.nutorrent.torrent.metadata.MagnetMetadataFetcher {
         metadataFetchers[torrentId]?.stop()
+        incomingPeerServer.unregisterSession(torrentId.bytes)
+        val port = if (incomingPeerServer.boundPort > 0) incomingPeerServer.boundPort else 6881
         val fetcher = com.nutorrent.torrent.metadata.MagnetMetadataFetcher(
             torrentId = torrentId,
             initialTrackers = trackers,
@@ -440,19 +443,28 @@ class TorrentEngine(
             scope = engineScope,
             peerHints = peerHints,
             exactSources = exactSources,
-            onResolved = { meta, raw ->
+            listenPort = port,
+            onResolved = { meta, raw, discoveredPeers ->
+                incomingPeerServer.unregisterSession(torrentId.bytes)
                 metadataFetchers.remove(torrentId)
                 _metadataFetchersFlow.value = metadataFetchers.toMap()
-                onResolved(meta, raw)
+                onResolved(meta, raw, discoveredPeers)
             }
         )
         metadataFetchers[torrentId] = fetcher
         _metadataFetchersFlow.value = metadataFetchers.toMap()
+
+        // Hook incoming peer connections for this torrent during metadata exchange
+        incomingPeerServer.registerSession(torrentId.bytes) { socket, handshake ->
+            fetcher.acceptIncomingPeer(socket, handshake)
+        }
+
         fetcher.start()
         return fetcher
     }
 
     fun cancelMetadataFetch(torrentId: TorrentId) {
+        incomingPeerServer.unregisterSession(torrentId.bytes)
         metadataFetchers.remove(torrentId)?.let {
             it.stop()
             _metadataFetchersFlow.value = metadataFetchers.toMap()

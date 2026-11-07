@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import com.nutorrent.core.model.AppError
 import com.nutorrent.core.model.ErrorAction
+import com.nutorrent.ui.states.TorrentNotFoundScreen
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.FileOpen
@@ -54,10 +55,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -93,6 +96,7 @@ import com.nutorrent.core.model.TrackerInfo
 import com.nutorrent.core.util.FormatUtils
 import com.nutorrent.data.repository.TorrentRepository
 import com.nutorrent.ui.components.PieceMapView
+import com.nutorrent.ui.components.DestructiveActionDialog
 import com.nutorrent.ui.components.PieceProgressBar
 import com.nutorrent.ui.components.StatItem
 import com.nutorrent.ui.components.StatusBadge
@@ -194,58 +198,24 @@ fun TorrentDetailsScreen(
     }
 
     if (torrentItem == null) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Torrent Details") },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    }
-                )
-            }
-        ) { padding ->
-            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("Torrent not found")
-            }
-        }
+        TorrentNotFoundScreen(
+            infoHashHex = infoHashHex,
+            onBack = onBack,
+            onAddTorrentClick = onBack
+        )
         return
     }
 
     if (showDeleteConfirmDialog) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirmDialog = false },
-            title = { Text("Remove Torrent") },
-            text = {
-                Column {
-                    Text("Are you sure you want to remove \"${torrentItem.name}\"?")
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = deleteFilesChecked,
-                            onCheckedChange = { deleteFilesChecked = it }
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Also delete downloaded files from disk", fontSize = 14.sp)
-                    }
-                }
+        DestructiveActionDialog(
+            itemCount = 1,
+            singleItemName = torrentItem.name,
+            totalBytes = torrentItem.totalLength,
+            onConfirmDelete = { deleteFiles ->
+                showDeleteConfirmDialog = false
+                onDeleteClick(torrentId, deleteFiles)
             },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showDeleteConfirmDialog = false
-                        onDeleteClick(torrentId, deleteFilesChecked)
-                    }
-                ) {
-                    Text("Remove")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { showDeleteConfirmDialog = false }
         )
     }
 
@@ -327,17 +297,34 @@ fun TorrentDetailsScreen(
                 }
             )
 
-            TabRow(
-                selectedTabIndex = selectedTabIndex,
-                containerColor = MaterialTheme.colorScheme.surface,
-                contentColor = MaterialTheme.colorScheme.primary
-            ) {
-                tabs.forEachIndexed { index, title ->
-                    Tab(
-                        selected = selectedTabIndex == index,
-                        onClick = { selectedTabIndex = index },
-                        text = { Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
-                    )
+            if (tabs.size > 3) {
+                ScrollableTabRow(
+                    selectedTabIndex = selectedTabIndex,
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                    edgePadding = 8.dp
+                ) {
+                    tabs.forEachIndexed { index, title ->
+                        Tab(
+                            selected = selectedTabIndex == index,
+                            onClick = { selectedTabIndex = index },
+                            text = { Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                        )
+                    }
+                }
+            } else {
+                TabRow(
+                    selectedTabIndex = selectedTabIndex,
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.primary
+                ) {
+                    tabs.forEachIndexed { index, title ->
+                        Tab(
+                            selected = selectedTabIndex == index,
+                            onClick = { selectedTabIndex = index },
+                            text = { Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                        )
+                    }
                 }
             }
 
@@ -416,53 +403,43 @@ fun StickyTransferSummaryHeader(
         ) {
             Text(
                 text = "↓ ${FormatUtils.formatSpeed(sessionProgress.downloadSpeedBps)}",
-                fontSize = 16.sp,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.primary
             )
-            Spacer(modifier = Modifier.width(20.dp))
+            Spacer(modifier = Modifier.width(16.dp))
             Text(
                 text = "↑ ${FormatUtils.formatSpeed(sessionProgress.uploadSpeedBps)}",
-                fontSize = 16.sp,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
                 color = NuSuccess
             )
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
-        // Swarm Metrics: Connected peers vs total known, and Available seeds
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val peersText = if (sessionProgress.totalPeers > 0) {
-                "Peers: ${sessionProgress.connectedPeers} connected (${sessionProgress.totalPeers} known)"
-            } else {
-                "Peers: ${sessionProgress.connectedPeers} connected"
-            }
-            Text(
-                text = peersText,
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            val seedsText = if (sessionProgress.availableSeeds != null) {
-                "Seeds: ${sessionProgress.availableSeeds} available"
-            } else if (sessionProgress.connectedSeeds > 0) {
-                "Seeds: ${sessionProgress.connectedSeeds} connected"
-            } else {
-                "Seeds: —"
-            }
-            Text(
-                text = seedsText,
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        // Swarm Metrics: Connected peers vs total known, and Available seeds collapsed compactly
+        val peersText = if (sessionProgress.totalPeers > 0) {
+            "${sessionProgress.connectedPeers} connected (${sessionProgress.totalPeers} known)"
+        } else {
+            "${sessionProgress.connectedPeers} connected"
         }
+        val seedsText = if (sessionProgress.availableSeeds != null) {
+            "${sessionProgress.availableSeeds} available"
+        } else if (sessionProgress.connectedSeeds > 0) {
+            "${sessionProgress.connectedSeeds} connected"
+        } else {
+            "—"
+        }
+        Text(
+            text = "Peers: $peersText   ·   Seeds: $seedsText",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
 
         Spacer(modifier = Modifier.height(10.dp))
 
@@ -508,26 +485,28 @@ fun StickyTransferSummaryHeader(
         // Primary Action Buttons Row
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (sessionState.isActive) {
                 Button(
                     onClick = onPauseClick,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1.3f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
                 ) {
-                    Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Pause", fontSize = 12.sp)
+                    Text("Pause", fontSize = 11.sp, maxLines = 1)
                 }
             } else {
                 Button(
                     onClick = onResumeClick,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1.3f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
                 ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Resume", fontSize = 12.sp)
+                    Text("Resume", fontSize = 11.sp, maxLines = 1)
                 }
             }
 
@@ -540,34 +519,39 @@ fun StickyTransferSummaryHeader(
                         onFilesTabClick()
                     }
                 },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
             ) {
                 Icon(
                     if (isComplete) Icons.Default.FileOpen else Icons.Default.Description,
                     contentDescription = null,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(14.dp)
                 )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(if (isComplete) "Open" else "Files", fontSize = 12.sp)
+                Spacer(modifier = Modifier.width(3.dp))
+                Text(if (isComplete) "Open" else "Files", fontSize = 11.sp, maxLines = 1)
             }
 
             OutlinedButton(
                 onClick = onForceRecheckClick,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
             ) {
-                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Recheck", fontSize = 12.sp)
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(3.dp))
+                Text("Recheck", fontSize = 11.sp, maxLines = 1)
             }
 
             IconButton(
                 onClick = onDeleteClick,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier
+                    .size(36.dp)
+                    .minimumInteractiveComponentSize()
             ) {
                 Icon(
                     Icons.Default.DeleteOutline,
                     contentDescription = "Delete",
-                    tint = NuError
+                    tint = NuError,
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
@@ -743,6 +727,12 @@ fun OverviewTab(
                     }
                 }
             }
+
+            item {
+                com.nutorrent.ui.components.RatioWarningBanner(
+                    ratio = progress.shareRatio.toFloat()
+                )
+            }
         }
 
         // Category selection card
@@ -886,11 +876,12 @@ fun OverviewTab(
                     fontWeight = FontWeight.Medium
                 )
 
-                val isPrivateStorage = !item.destinationPath.startsWith("content://")
-                if (isPrivateStorage) {
+                val isCustomSAF = item.destinationPath.startsWith("content://")
+                val isNuTorrentFolder = item.destinationPath.contains("NuTorrent")
+                if (!isCustomSAF && !isNuTorrentFolder) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Note: Files saved in App Private Storage are isolated by Android Scoped Storage. Tap 'Change Location' below to pick a public folder (like Downloads or Movies) if you want files accessible directly in your file managers.",
+                        text = "Note: Tap 'Change Location' below if you want files moved to a different directory or public folder.",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 15.sp

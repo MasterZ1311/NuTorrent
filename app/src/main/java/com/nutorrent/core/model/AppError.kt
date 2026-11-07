@@ -154,12 +154,18 @@ sealed class AppError(
             cause = cause
         )
 
-    class FileCreationFailed(val path: String, val reason: String, cause: Throwable? = null) :
+    class FileCreationFailed(
+        val path: String,
+        val reason: String,
+        cause: Throwable? = null,
+        action: ErrorAction = if (reason.contains("base download directory", ignoreCase = true) || reason.contains("permission", ignoreCase = true) || reason.contains("directory", ignoreCase = true)) ErrorAction.CHOOSE_LOCATION else ErrorAction.RETRY,
+        actionText: String = if (action == ErrorAction.CHOOSE_LOCATION) "Choose Folder" else "Retry"
+    ) :
         AppError(
             title = "File creation failure",
             userMessage = "Could not create target download file on disk: $reason",
-            actionText = "Retry",
-            action = ErrorAction.RETRY,
+            actionText = actionText,
+            action = action,
             category = ErrorCategory.STORAGE,
             technicalDetails = "Failed creating $path: $reason",
             cause = cause

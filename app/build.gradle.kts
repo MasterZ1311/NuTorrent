@@ -31,17 +31,18 @@ android {
             val keystorePath = System.getenv("KEYSTORE_FILE")
                 ?: (project.findProperty("KEYSTORE_FILE") as? String)
                 ?: localProps.getProperty("KEYSTORE_FILE")
-            val keystoreFile = if (!keystorePath.isNullOrEmpty()) file(keystorePath) else file("nutorrent-release.jks").takeIf { it.exists() }
+            // Explicit configuration required: do not automatically bind to nutorrent-release.jks
+            val keystoreFile = if (!keystorePath.isNullOrEmpty()) file(keystorePath) else null
             storeFile = keystoreFile
             storePassword = System.getenv("KEYSTORE_PASSWORD")
                 ?: (project.findProperty("KEYSTORE_PASSWORD") as? String)
-                ?: localProps.getProperty("KEYSTORE_PASSWORD") ?: ""
+                ?: localProps.getProperty("KEYSTORE_PASSWORD")
             keyAlias = System.getenv("KEY_ALIAS")
                 ?: (project.findProperty("KEY_ALIAS") as? String)
-                ?: localProps.getProperty("KEY_ALIAS") ?: "nutorrent"
+                ?: localProps.getProperty("KEY_ALIAS")
             keyPassword = System.getenv("KEY_PASSWORD")
                 ?: (project.findProperty("KEY_PASSWORD") as? String)
-                ?: localProps.getProperty("KEY_PASSWORD") ?: ""
+                ?: localProps.getProperty("KEY_PASSWORD")
         }
     }
 
@@ -50,12 +51,17 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             val releaseSigning = signingConfigs.getByName("release")
-            signingConfig = if (releaseSigning.storeFile?.exists() == true && !releaseSigning.storePassword.isNullOrEmpty()) {
+            val hasExplicitCredentials = releaseSigning.storeFile?.exists() == true &&
+                !releaseSigning.storePassword.isNullOrEmpty() &&
+                !releaseSigning.keyAlias.isNullOrEmpty() &&
+                !releaseSigning.keyPassword.isNullOrEmpty()
+
+            signingConfig = if (hasExplicitCredentials) {
                 releaseSigning
             } else if (project.hasProperty("allowDebugSigningForRelease")) {
                 signingConfigs.getByName("debug")
             } else {
-                null
+                null // Unsigned release artifact produced safely when credentials are not configured
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -120,4 +126,21 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     debugImplementation(libs.androidx.ui.tooling)
+}
+
+afterEvaluate {
+    if (project.hasProperty("requireReleaseSigning")) {
+        val releaseSigning = android.signingConfigs.getByName("release")
+        val hasExplicitCredentials = releaseSigning.storeFile?.exists() == true &&
+            !releaseSigning.storePassword.isNullOrEmpty() &&
+            !releaseSigning.keyAlias.isNullOrEmpty() &&
+            !releaseSigning.keyPassword.isNullOrEmpty()
+        if (!hasExplicitCredentials) {
+            tasks.matching { it.name.contains("Release", ignoreCase = true) }.configureEach {
+                doFirst {
+                    throw GradleException("Release build requires KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD to be configured.")
+                }
+            }
+        }
+    }
 }

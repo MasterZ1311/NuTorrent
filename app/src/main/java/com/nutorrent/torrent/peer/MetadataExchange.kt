@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Handles downloading, assembly, verification, and serving of .torrent metadata (BEP 9).
+ * Features pipelined concurrent piece tracking and watchdog timeout recovery.
  */
 class MetadataExchange(
     val expectedInfoHash: TorrentId,
@@ -17,12 +18,14 @@ class MetadataExchange(
         private set
 
     private val receivedPieces = ConcurrentHashMap<Int, ByteArray>()
+    private val inFlightRequests = ConcurrentHashMap<Int, Long>()
     var totalPieces: Int = if (metadataSize > 0) calculatePiecesCount(metadataSize) else 0
         private set
 
     companion object {
         const val MAX_METADATA_SIZE = 10 * 1024 * 1024 // 10 MiB safety bound
         const val PIECE_SIZE = 16384 // 16 KiB
+        const val PIECE_REQUEST_TIMEOUT_MS = 2500L // 2.5s timeout for in-flight piece before re-requesting
 
         fun calculatePiecesCount(totalSize: Int): Int {
             return (totalSize + PIECE_SIZE - 1) / PIECE_SIZE
@@ -46,14 +49,61 @@ class MetadataExchange(
         return receivedPieces.size == totalPieces
     }
 
-    fun getNextNeededPiece(): Int? {
-        if (totalPieces == 0) return null
+    /**
+     * Selects the next metadata piece to request.
+     * When [excludeInFlight] is true, prioritizes pieces that have not yet been requested from any peer,
+     * or whose previous request has timed out (> [PIECE_REQUEST_TIMEOUT_MS]).
+     * If all remaining pieces are currently in-flight, returns the oldest pending piece for duplicate racing.
+     */
+    fun getNextNeededPiece(excludeInFlight: Boolean = true): Int? {
+        val now = System.currentTimeMillis()
+        if (totalPieces == 0) {
+            if (receivedPieces.containsKey(0)) return null
+            if (excludeInFlight) {
+                val reqTime = inFlightRequests[0]
+                if (reqTime != null && (now - reqTime) < PIECE_REQUEST_TIMEOUT_MS) {
+                    return null
+                }
+            }
+            return 0
+        }
+
+        // 1. Look for unrequested missing pieces or timed-out in-flight pieces
         for (i in 0 until totalPieces) {
             if (!receivedPieces.containsKey(i)) {
-                return i
+                val reqTime = inFlightRequests[i]
+                if (!excludeInFlight || reqTime == null || (now - reqTime) > PIECE_REQUEST_TIMEOUT_MS) {
+                    return i
+                }
             }
         }
-        return null
+
+        // 2. If all missing pieces are in-flight, race the oldest piece that has been pending > 1500ms
+        var oldestPiece: Int? = null
+        var oldestTime = Long.MAX_VALUE
+        for (i in 0 until totalPieces) {
+            if (!receivedPieces.containsKey(i)) {
+                val reqTime = inFlightRequests[i]
+                if (reqTime != null && (now - reqTime) > 1500L && reqTime < oldestTime) {
+                    oldestTime = reqTime
+                    oldestPiece = i
+                }
+            }
+        }
+
+        return oldestPiece
+    }
+
+    fun markPieceRequested(pieceIndex: Int) {
+        inFlightRequests[pieceIndex] = System.currentTimeMillis()
+    }
+
+    fun onPieceFailed(pieceIndex: Int) {
+        inFlightRequests.remove(pieceIndex)
+    }
+
+    fun clearInFlight() {
+        inFlightRequests.clear()
     }
 
     /**
@@ -63,6 +113,7 @@ class MetadataExchange(
     @Synchronized
     fun onPieceReceived(pieceIndex: Int, totalSize: Int, data: ByteArray): ByteArray? {
         setMetadataSize(totalSize)
+        inFlightRequests.remove(pieceIndex)
         if (totalPieces == 0 || pieceIndex < 0 || pieceIndex >= totalPieces) {
             Lg.w(LogCategory.METAINFO, "Metadata piece index out of bounds: $pieceIndex (total: $totalPieces)")
             return null
@@ -104,10 +155,12 @@ class MetadataExchange(
         return if (MessageDigest.isEqual(computedHash, expectedInfoHash.bytes)) {
             Lg.i(LogCategory.METAINFO, "Metadata assembled and verified successfully for ${expectedInfoHash.hex}")
             rawMetadataBytes = assembled
+            inFlightRequests.clear()
             assembled
         } else {
             Lg.w(LogCategory.METAINFO, "Metadata SHA-1 verification FAILED for ${expectedInfoHash.hex}! Discarding.")
             receivedPieces.clear()
+            inFlightRequests.clear()
             null
         }
     }

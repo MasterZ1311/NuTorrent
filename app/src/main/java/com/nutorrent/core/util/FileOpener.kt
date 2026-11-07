@@ -19,7 +19,12 @@ object FileOpener {
 
     fun getMimeType(fileName: String): String {
         val extension = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
-        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: when (extension) {
+        val frameworkMime = try {
+            MimeTypeMap.getSingleton()?.getMimeTypeFromExtension(extension)
+        } catch (_: Throwable) {
+            null
+        }
+        return frameworkMime ?: when (extension) {
             "mkv" -> "video/x-matroska"
             "mp4", "m4v" -> "video/mp4"
             "avi" -> "video/x-msvideo"
@@ -192,6 +197,9 @@ object FileOpener {
             context.startActivity(chooser)
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(context, "No app found to open ${file.extension.uppercase()} file", Toast.LENGTH_SHORT).show()
+        } catch (e: IllegalArgumentException) {
+            Lg.e(LogCategory.STORAGE, "File cannot be shared via FileProvider (outside configured paths): ${file.absolutePath}", e)
+            Toast.makeText(context, "File path is outside permitted application storage", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Lg.e(LogCategory.STORAGE, "Failed to open file ${file.absolutePath}", e)
             Toast.makeText(context, "Error opening file: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -270,6 +278,9 @@ object FileOpener {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(chooser)
+        } catch (e: IllegalArgumentException) {
+            Lg.e(LogCategory.STORAGE, "File cannot be shared via FileProvider (outside configured paths): ${file.absolutePath}", e)
+            Toast.makeText(context, "File path is outside permitted application storage", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Lg.e(LogCategory.STORAGE, "Failed to share file ${file.absolutePath}", e)
             Toast.makeText(context, "Error sharing file: ${e.message}", Toast.LENGTH_SHORT).show()

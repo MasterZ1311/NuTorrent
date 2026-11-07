@@ -25,6 +25,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +44,12 @@ import com.nutorrent.ui.details.TorrentDetailsScreen
 import com.nutorrent.ui.home.HomeScreen
 import com.nutorrent.ui.navigation.Screen
 import com.nutorrent.ui.settings.SettingsScreen
+import com.nutorrent.ui.community.ReferralCommunityScreen
+import com.nutorrent.ui.onboarding.OnboardingFlow
+import com.nutorrent.ui.states.RouteNotFoundScreen
+import com.nutorrent.ui.states.InvalidMagnetScreen
+import com.nutorrent.ui.states.InvalidTorrentFileScreen
+import com.nutorrent.ui.states.TorrentNotFoundScreen
 import com.nutorrent.ui.theme.NuTorrentTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -181,7 +188,21 @@ fun NuTorrentAppNavigation(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
+    val userSettings by settingsRepo.settings.collectAsState()
+    val torrentsList by repository.torrentsList.collectAsState()
+
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
+
+    if (!userSettings.hasCompletedOnboarding && torrentsList.isEmpty()) {
+        OnboardingFlow(
+            onComplete = {
+                scope.launch {
+                    settingsRepo.updateSettings(userSettings.copy(hasCompletedOnboarding = true))
+                }
+            }
+        )
+        return
+    }
 
     LaunchedEffect(incomingData) {
         val uri = incomingData ?: return@LaunchedEffect
@@ -200,6 +221,10 @@ fun NuTorrentAppNavigation(
                 }
             } catch (e: Exception) {
                 com.nutorrent.core.util.Lg.e(com.nutorrent.core.util.LogCategory.ENGINE, "Failed parsing magnet link from intent: $uri", e)
+                currentScreen = Screen.InvalidMagnet(
+                    rawUrl = uriStr,
+                    errorReason = e.message ?: "Failed parsing magnet URI parameters"
+                )
             }
         } else {
             currentScreen = Screen.AddTorrent(uri)
@@ -250,6 +275,9 @@ fun NuTorrentAppNavigation(
                     onSettingsClick = {
                         NuHaptics.tick(context)
                         currentScreen = Screen.Settings
+                    },
+                    onCommunityClick = {
+                        currentScreen = Screen.CommunityReferrals
                     },
                     onPauseClick = { torrentId ->
                         NuHaptics.click(context)
@@ -346,6 +374,70 @@ fun NuTorrentAppNavigation(
                         NuHaptics.tick(context)
                         currentScreen = Screen.Home
                     }
+                )
+            }
+            is Screen.TorrentNotFound -> {
+                BackHandler { currentScreen = Screen.Home }
+                TorrentNotFoundScreen(
+                    infoHashHex = screen.infoHash,
+                    onBack = { currentScreen = Screen.Home },
+                    onAddTorrentClick = {
+                        onOpenTorrentPicker(filePickerLauncher)
+                    }
+                )
+            }
+            is Screen.InvalidMagnet -> {
+                BackHandler { currentScreen = Screen.Home }
+                InvalidMagnetScreen(
+                    rawUrl = screen.rawUrl,
+                    errorReason = screen.errorReason,
+                    onBack = { currentScreen = Screen.Home },
+                    onPasteAgain = { pastedText ->
+                        try {
+                            val mag = com.nutorrent.torrent.metainfo.MagnetUri.parse(pastedText)
+                            scope.launch {
+                                repository.addMagnetTorrent(
+                                    magnet = mag,
+                                    destinationPath = settingsRepo.settings.value.defaultDownloadPath,
+                                    autoStart = true
+                                )
+                                currentScreen = Screen.Home
+                            }
+                        } catch (e: Exception) {
+                            currentScreen = Screen.InvalidMagnet(
+                                rawUrl = pastedText,
+                                errorReason = e.message ?: "Invalid magnet link"
+                            )
+                        }
+                    },
+                    onPickTorrentFile = {
+                        onOpenTorrentPicker(filePickerLauncher)
+                    }
+                )
+            }
+            is Screen.InvalidTorrentFile -> {
+                BackHandler { currentScreen = Screen.Home }
+                InvalidTorrentFileScreen(
+                    fileName = screen.fileName,
+                    errorReason = screen.errorReason,
+                    onBack = { currentScreen = Screen.Home },
+                    onChooseAnotherFile = {
+                        onOpenTorrentPicker(filePickerLauncher)
+                    }
+                )
+            }
+            is Screen.CommunityReferrals -> {
+                BackHandler { currentScreen = Screen.Home }
+                ReferralCommunityScreen(
+                    userSettings = userSettings,
+                    onBack = { currentScreen = Screen.Home }
+                )
+            }
+            is Screen.RouteNotFound -> {
+                BackHandler { currentScreen = Screen.Home }
+                RouteNotFoundScreen(
+                    onGoHome = { currentScreen = Screen.Home },
+                    onOpenSettings = { currentScreen = Screen.Settings }
                 )
             }
         }

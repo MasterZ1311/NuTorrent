@@ -6,6 +6,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -127,11 +128,22 @@ fun StatusBadge(
         remember { mutableFloatStateOf(1.0f) }
     }
 
+    val animatedBgColor by animateColorAsState(
+        targetValue = bgColor,
+        animationSpec = tween(400),
+        label = "badgeBg"
+    )
+    val animatedTextColor by animateColorAsState(
+        targetValue = textColor,
+        animationSpec = tween(400),
+        label = "badgeText"
+    )
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
-            .background(bgColor)
+            .background(animatedBgColor)
             .border(0.5.dp, textColor.copy(alpha = 0.25f), RoundedCornerShape(6.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
@@ -143,12 +155,12 @@ fun StatusBadge(
                     scaleY = dotPulseScale
                 }
                 .clip(CircleShape)
-                .background(textColor)
+                .background(animatedTextColor)
         )
         Spacer(modifier = Modifier.width(6.dp))
         Text(
             text = text,
-            color = textColor,
+            color = animatedTextColor,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold
         )
@@ -214,11 +226,18 @@ fun PieceProgressBar(
         label = "sparkAlpha"
     )
 
+    // Throughput-coupled height pulsing (>5 MB/s activates thicker beam)
+    val animatedHeight by animateDpAsState(
+        targetValue = if (isActive && downloadSpeedBps > 5_000_000) 10.dp else 7.dp,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "barHeight"
+    )
+
     Box(
         modifier = modifier
-            .height(8.dp)
+            .height(animatedHeight)
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
+            .clip(RoundedCornerShape(animatedHeight / 2))
             .background(trackColor)
     ) {
         if (animatedProgress > 0f) {
@@ -226,7 +245,7 @@ fun PieceProgressBar(
                 modifier = Modifier
                     .fillMaxHeight()
                     .fillMaxWidth(animatedProgress)
-                    .clip(RoundedCornerShape(4.dp))
+                    .clip(RoundedCornerShape(animatedHeight / 2))
                     .background(
                         if (isActive && !isFinished && targetProgress < 1f) {
                             Brush.horizontalGradient(
@@ -259,8 +278,8 @@ fun PieceProgressBar(
                     Box(
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
-                            .size(width = 8.dp, height = 8.dp)
-                            .clip(RoundedCornerShape(4.dp))
+                            .size(width = 6.dp, height = animatedHeight)
+                            .clip(RoundedCornerShape(animatedHeight / 2))
                             .background(Color.White.copy(alpha = sparkAlpha * 0.9f))
                     )
                 }
@@ -403,12 +422,33 @@ fun PieceMapView(
                 break
             }
 
-            val color = when (pieceStates[i]) {
+            val pieceState = pieceStates[i]
+            val color = when (pieceState) {
                 PieceState.COMPLETE -> verifiedColor
                 PieceState.DOWNLOADING, PieceState.QUEUED, PieceState.VERIFYING ->
                     NuPrimary.copy(alpha = downloadingAlpha)
                 PieceState.FAILED -> failedColor
                 PieceState.MISSING -> missingColor
+            }
+
+            // 3D Depth illusion: shadow under completed blocks
+            if (pieceState == PieceState.COMPLETE) {
+                drawRect(
+                    color = Color.Black.copy(alpha = 0.22f),
+                    topLeft = androidx.compose.ui.geometry.Offset(x + 1f, y + 1f),
+                    size = androidx.compose.ui.geometry.Size(blockSize, blockSize)
+                )
+            } else if (pieceState == PieceState.DOWNLOADING || pieceState == PieceState.VERIFYING) {
+                // Radial energy glow around active piece transfers
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(NuPrimary.copy(alpha = 0.38f * downloadingAlpha), Color.Transparent),
+                        center = androidx.compose.ui.geometry.Offset(x + blockSize / 2, y + blockSize / 2),
+                        radius = blockSize * 1.3f
+                    ),
+                    topLeft = androidx.compose.ui.geometry.Offset(x - blockSize * 0.15f, y - blockSize * 0.15f),
+                    size = androidx.compose.ui.geometry.Size(blockSize * 1.3f, blockSize * 1.3f)
+                )
             }
 
             drawRoundRect(

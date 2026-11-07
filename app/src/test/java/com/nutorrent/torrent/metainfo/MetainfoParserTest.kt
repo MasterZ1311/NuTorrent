@@ -151,4 +151,42 @@ class MetainfoParserTest {
         assertEquals(meta.totalLength, parsedFull.totalLength)
         assertEquals(trackers.first(), parsedFull.announceList.first())
     }
+    @Test
+    fun `test calculateExpectedPieces boundary values and overflow protection`() {
+        // Zero length
+        assertEquals(0, MetainfoParser.calculateExpectedPieces(0L, 16384L))
+
+        // Exact multiple
+        assertEquals(2, MetainfoParser.calculateExpectedPieces(32768L, 16384L))
+
+        // Inexact multiple (requires ceiling)
+        assertEquals(3, MetainfoParser.calculateExpectedPieces(32769L, 16384L))
+
+        // Invalid piece length
+        assertThrows(AppError.InvalidTorrent::class.java) {
+            MetainfoParser.calculateExpectedPieces(1000L, 0L)
+        }
+        assertThrows(AppError.InvalidTorrent::class.java) {
+            MetainfoParser.calculateExpectedPieces(1000L, -1L)
+        }
+
+        // Invalid negative total length
+        assertThrows(AppError.InvalidTorrent::class.java) {
+            MetainfoParser.calculateExpectedPieces(-100L, 16384L)
+        }
+
+        // Large totalLength exceeding Int.MAX_VALUE pieces (e.g. 100 TB with 16KB pieces)
+        val hugeLength = 100_000_000_000_000L
+        val ex1 = assertThrows(AppError.InvalidTorrent::class.java) {
+            MetainfoParser.calculateExpectedPieces(hugeLength, 16384L)
+        }
+        assertTrue(ex1.message!!.contains("exceeds maximum supported integer"))
+
+        // Boundary near Long.MAX_VALUE: in old code (totalLength + pieceLength - 1) would overflow Long to negative
+        val nearMaxLong = Long.MAX_VALUE - 100L
+        val ex2 = assertThrows(AppError.InvalidTorrent::class.java) {
+            MetainfoParser.calculateExpectedPieces(nearMaxLong, 16384L)
+        }
+        assertTrue(ex2.message!!.contains("exceeds maximum supported integer"))
+    }
 }

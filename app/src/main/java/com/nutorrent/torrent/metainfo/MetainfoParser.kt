@@ -166,13 +166,8 @@ object MetainfoParser {
 
         val totalLength = files.sumOf { it.length }
 
-        // Validate pieces count against total length
-        val expectedPiecesCount = if (totalLength == 0L) {
-            0
-        } else {
-            ((totalLength + pieceLength - 1) / pieceLength).toInt()
-        }
-
+        // Validate pieces count against total length using overflow-safe arithmetic
+        val expectedPiecesCount = calculateExpectedPieces(totalLength, pieceLength)
         if (expectedPiecesCount != pieceHashesCount) {
             throw AppError.InvalidTorrent(
                 "Pieces count mismatch: total size $totalLength with piece length $pieceLength expects $expectedPiecesCount pieces, but found $pieceHashesCount hashes"
@@ -331,6 +326,9 @@ object MetainfoParser {
 
                 val relativePath = pathSegments.joinToString(File.separator)
 
+                if (Long.MAX_VALUE - currentOffset < fileLen) {
+                    throw AppError.InvalidTorrent("Total torrent size overflows Long.MAX_VALUE")
+                }
                 files.add(
                     TorrentFile(
                         index = index,
@@ -345,6 +343,15 @@ object MetainfoParser {
         }
 
         val totalLength = files.sumOf { it.length }
+
+        // Validate pieces count against total length using overflow-safe arithmetic
+        val expectedPiecesCount = calculateExpectedPieces(totalLength, pieceLength)
+        if (expectedPiecesCount != pieceHashesCount) {
+            throw AppError.InvalidTorrent(
+                "Pieces count mismatch: total size $totalLength with piece length $pieceLength expects $expectedPiecesCount pieces, but found $pieceHashesCount hashes"
+            )
+        }
+
         val isPrivate = (rootElement.getInteger("private") ?: 0L) == 1L
 
         return TorrentMetadata(
@@ -381,5 +388,28 @@ object MetainfoParser {
             root["announce-list"] = BencodeElement.BList(announceList)
         }
         return BencodeEncoder.encode(BencodeElement.BDictionary(root))
+    }
+    /**
+     * Calculates the expected piece count for a torrent using safe 64-bit integer arithmetic.
+     * Prevents integer overflow when adding pieceLength or totalLength, validates bounds against Int.MAX_VALUE,
+     * and strictly rejects invalid or impossible piece counts.
+     */
+    fun calculateExpectedPieces(totalLength: Long, pieceLength: Long): Int {
+        if (pieceLength <= 0L) {
+            throw AppError.InvalidTorrent("Invalid piece length: $pieceLength")
+        }
+        if (totalLength < 0L) {
+            throw AppError.InvalidTorrent("Invalid total length: $totalLength")
+        }
+        if (totalLength == 0L) {
+            return 0
+        }
+        val fullPieces = totalLength / pieceLength
+        val remainder = totalLength % pieceLength
+        val piecesLong = if (remainder > 0L) fullPieces + 1L else fullPieces
+        if (piecesLong > Int.MAX_VALUE || piecesLong < 0L) {
+            throw AppError.InvalidTorrent("Calculated piece count $piecesLong exceeds maximum supported integer")
+        }
+        return piecesLong.toInt()
     }
 }

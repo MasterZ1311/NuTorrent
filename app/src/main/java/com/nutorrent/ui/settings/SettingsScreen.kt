@@ -45,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nutorrent.data.repository.SettingsRepository
@@ -117,19 +118,29 @@ fun SettingsScreen(
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    val isPrivate = !settings.defaultDownloadPath.startsWith("content://")
-                    if (isPrivate) {
+                    val defaultPath = com.nutorrent.data.repository.SettingsRepository.getDefaultDownloadDir(context)
+                    val isDefault = settings.defaultDownloadPath == defaultPath
+                    val isSAF = settings.defaultDownloadPath.startsWith("content://")
+                    if (isDefault) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Currently using App Private Storage. On Android 11+, external file managers cannot access files here. Pick a custom folder (e.g. Downloads or Movies) so your files are visible to other apps.",
+                            text = "Default Internal Storage: Files are saved to the 'NuTorrent' directory on internal storage.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 15.sp
+                        )
+                    } else if (isSAF) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Custom SAF Storage: Files are saved directly to your chosen device storage and are accessible by any file manager or media app.",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 15.sp
                         )
                     } else {
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Custom SAF Storage: Files are saved directly to your chosen device storage and are accessible by any file manager or media app.",
+                            text = "Custom Storage Location: Files are saved to a custom directory.",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 15.sp
@@ -150,7 +161,7 @@ fun SettingsScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Change Folder (SAF)", fontSize = 12.sp)
+                            Text("Change Folder (SAF)", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
                         }
                         androidx.compose.material3.OutlinedButton(
                             onClick = {
@@ -164,19 +175,19 @@ fun SettingsScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Open Folder", fontSize = 12.sp)
+                            Text("Open Folder", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
                         }
                     }
-                    if (!isPrivate) {
+                    if (!isDefault) {
                         Spacer(modifier = Modifier.height(6.dp))
                         androidx.compose.material3.TextButton(
                             onClick = {
-                                val appPrivatePath = java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "Downloads").absolutePath
-                                settingsRepository.updateSettings(settings.copy(defaultDownloadPath = appPrivatePath))
+                                val defStoragePath = com.nutorrent.data.repository.SettingsRepository.getDefaultDownloadDir(context)
+                                settingsRepository.updateSettings(settings.copy(defaultDownloadPath = defStoragePath))
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Reset to App Private Storage", fontSize = 12.sp)
+                            Text("Reset to Default Storage (NuTorrent)", fontSize = 12.sp)
                         }
                     }
 

@@ -109,4 +109,23 @@ class BencodeTest {
         val encodedStr = String(encoded, StandardCharsets.US_ASCII)
         assertTrue(encodedStr.startsWith("d1:a5:apple4:listli1ei2ee1:zi100ee"))
     }
+    @Test
+    fun `test decodeWithInfoRange rejects trailing bytes`() {
+        val valid = "d4:infod4:name4:test12:piece lengthi16384eee".toByteArray(StandardCharsets.ISO_8859_1)
+        val (root, infoRange) = BencodeDecoder.decodeWithInfoRange(valid)
+        assertNotNull(root)
+        assertNotNull(infoRange)
+
+        val trailingByte = "d4:infod4:name4:test12:piece lengthi16384eeee".toByteArray(StandardCharsets.ISO_8859_1)
+        val ex1 = assertThrows(BencodeException::class.java) {
+            BencodeDecoder.decodeWithInfoRange(trailingByte)
+        }
+        assertTrue(ex1.message!!.contains("Trailing bytes"))
+
+        val trailingGarbage = "d4:infod4:name4:test12:piece lengthi16384eeeMALICIOUS_EXTRA_PAYLOAD".toByteArray(StandardCharsets.ISO_8859_1)
+        val ex2 = assertThrows(BencodeException::class.java) {
+            BencodeDecoder.decodeWithInfoRange(trailingGarbage)
+        }
+        assertTrue(ex2.message!!.contains("Trailing bytes"))
+    }
 }

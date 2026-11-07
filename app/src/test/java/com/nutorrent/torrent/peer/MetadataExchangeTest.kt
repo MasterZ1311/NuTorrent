@@ -93,4 +93,40 @@ class MetadataExchangeTest {
         assertNull(result)
         assertFalse(exchange.isComplete())
     }
+
+    @Test
+    fun `test pipelined concurrent piece request selection and in-flight tracking`() {
+        val totalSize = 48000 // 3 pieces (16384, 16384, 15232)
+        val dummyMetadata = ByteArray(totalSize) { 0x5A }
+        val sha1 = MessageDigest.getInstance("SHA-1").digest(dummyMetadata)
+        val infoHash = TorrentId(sha1)
+
+        val exchange = MetadataExchange(expectedInfoHash = infoHash)
+        exchange.setMetadataSize(totalSize)
+        assertEquals(3, exchange.totalPieces)
+
+        // Peer A requests first piece
+        val pieceForPeerA = exchange.getNextNeededPiece(excludeInFlight = true)
+        assertEquals(0, pieceForPeerA)
+        exchange.markPieceRequested(0)
+
+        // Peer B requests next piece concurrently - should receive piece 1 (NOT piece 0!)
+        val pieceForPeerB = exchange.getNextNeededPiece(excludeInFlight = true)
+        assertEquals(1, pieceForPeerB)
+        exchange.markPieceRequested(1)
+
+        // Peer C requests next piece concurrently - should receive piece 2
+        val pieceForPeerC = exchange.getNextNeededPiece(excludeInFlight = true)
+        assertEquals(2, pieceForPeerC)
+        exchange.markPieceRequested(2)
+
+        // With all pieces in-flight, unrequested query returns null
+        val noneAvailable = exchange.getNextNeededPiece(excludeInFlight = true)
+        assertNull(noneAvailable)
+
+        // If piece 1 fails (rejected/timeout), it is immediately freed for another peer
+        exchange.onPieceFailed(1)
+        val reRequestedPiece = exchange.getNextNeededPiece(excludeInFlight = true)
+        assertEquals(1, reRequestedPiece)
+    }
 }

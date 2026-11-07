@@ -31,22 +31,33 @@ data class UserSettings(
     val uiMode: String = "SIMPLE", // "SIMPLE", "ADVANCED"
     val lifetimeDownloadedBytes: Long = 0L,
     val lifetimeUploadedBytes: Long = 0L,
-    val completedTorrentsCount: Int = 0
+    val completedTorrentsCount: Int = 0,
+    val hasCompletedOnboarding: Boolean = false,
+    val preferredLayoutMode: String = "AUTO" // "AUTO", "CARDS", "TABLE"
 )
 
-class SettingsRepository(context: Context) {
+class SettingsRepository(private val context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("nutorrent_settings", Context.MODE_PRIVATE)
 
-    private val defaultDownloadDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "Downloads").apply {
-        if (!exists()) mkdirs()
-    }.absolutePath
+    private val defaultDownloadDir: String get() = getDefaultDownloadDir(context)
+
+
+
 
     private val _settings = MutableStateFlow(loadSettings())
     val settings: StateFlow<UserSettings> = _settings.asStateFlow()
 
     private fun loadSettings(): UserSettings {
+        val savedPath = prefs.getString("download_path", null)
+        val resolvedPath = if (savedPath.isNullOrBlank() || savedPath.endsWith("/Downloads") || savedPath.endsWith("\\Downloads") || !isPathWritable(savedPath, context)) {
+            val def = getDefaultDownloadDir(context)
+            prefs.edit().putString("download_path", def).apply()
+            def
+        } else {
+            savedPath
+        }
         return UserSettings(
-            defaultDownloadPath = prefs.getString("download_path", defaultDownloadDir) ?: defaultDownloadDir,
+            defaultDownloadPath = resolvedPath,
             maxPeerConnections = prefs.getInt("max_peers", 50).coerceIn(5, 200),
             downloadSpeedLimitBps = prefs.getLong("speed_limit", 0L),
             uploadSpeedLimitBps = prefs.getLong("upload_speed_limit", 0L),
@@ -69,7 +80,9 @@ class SettingsRepository(context: Context) {
             uiMode = prefs.getString("ui_mode", "SIMPLE") ?: "SIMPLE",
             lifetimeDownloadedBytes = prefs.getLong("lifetime_downloaded", 0L),
             lifetimeUploadedBytes = prefs.getLong("lifetime_uploaded", 0L),
-            completedTorrentsCount = prefs.getInt("completed_torrents_count", 0)
+            completedTorrentsCount = prefs.getInt("completed_torrents_count", 0),
+            hasCompletedOnboarding = prefs.getBoolean("has_completed_onboarding", false),
+            preferredLayoutMode = prefs.getString("preferred_layout_mode", "AUTO") ?: "AUTO"
         )
     }
 
@@ -99,6 +112,8 @@ class SettingsRepository(context: Context) {
             .putLong("lifetime_downloaded", newSettings.lifetimeDownloadedBytes)
             .putLong("lifetime_uploaded", newSettings.lifetimeUploadedBytes)
             .putInt("completed_torrents_count", newSettings.completedTorrentsCount)
+            .putBoolean("has_completed_onboarding", newSettings.hasCompletedOnboarding)
+            .putString("preferred_layout_mode", newSettings.preferredLayoutMode)
             .apply()
         _settings.value = newSettings
     }
@@ -121,5 +136,78 @@ class SettingsRepository(context: Context) {
         val updated = _settings.value.completedTorrentsCount + 1
         prefs.edit().putInt("completed_torrents_count", updated).apply()
         _settings.value = _settings.value.copy(completedTorrentsCount = updated)
+    }
+
+    companion object {
+        /**
+         * Safely probes whether a directory can actually be created and written to
+         * under Android Scoped Storage / SELinux policies using an atomic file write probe.
+         */
+        fun isPathWritable(path: String?, context: Context? = null): Boolean {
+            if (path.isNullOrBlank()) return false
+            if (path.startsWith("content://", ignoreCase = true)) {
+                return if (context != null) {
+                    try {
+                        val uri = android.net.Uri.parse(path)
+                        val doc = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, uri)
+                        doc != null && doc.exists() && doc.canWrite()
+                    } catch (_: Throwable) {
+                        false
+                    }
+                } else {
+                    true
+                }
+            }
+            return try {
+                val cleanPath = if (path.startsWith("file://", ignoreCase = true)) {
+                    android.net.Uri.parse(path).path ?: path.removePrefix("file://")
+                } else {
+                    path
+                }
+                val dir = File(cleanPath)
+                if (!dir.exists()) {
+                    dir.mkdirs()
+                }
+                if (dir.exists() && dir.isDirectory) {
+                    val probe = File(dir, ".probe_${System.currentTimeMillis()}")
+                    if (probe.createNewFile()) {
+                        probe.delete()
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
+        /**
+         * Resolves and ensures the default download directory in storage.
+         * Guarantees returning a directory that actually has write permissions.
+         */
+        fun getDefaultDownloadDir(context: Context): String {
+            // 1. Public Downloads directory: /storage/emulated/0/Download/NuTorrent (if accessible/writable)
+            try {
+                val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                if (downloadsDir != null) {
+                    val nuFolder = File(downloadsDir, "NuTorrent")
+                    if (isPathWritable(nuFolder.absolutePath)) {
+                        return nuFolder.absolutePath
+                    }
+                }
+            } catch (_: Throwable) {}
+
+            // 2. Guaranteed safe fallback: App-specific external storage (.../Android/data/com.nutorrent/files/NuTorrent)
+            // Always writable on all Android versions without requiring broad permissions
+            val appNuFolder = File(context.getExternalFilesDir(null) ?: context.filesDir, "NuTorrent").apply {
+                if (!exists()) {
+                    mkdirs()
+                }
+            }
+            return appNuFolder.absolutePath
+        }
     }
 }

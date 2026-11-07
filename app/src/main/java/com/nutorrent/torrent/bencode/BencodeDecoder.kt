@@ -33,6 +33,9 @@ class BencodeDecoder(
         fun decodeWithInfoRange(bytes: ByteArray): Pair<BencodeElement, IntRange?> {
             val decoder = BencodeDecoder(bytes)
             val result = decoder.decodeRootDictionary()
+            if (decoder.hasRemaining()) {
+                throw BencodeException("Trailing bytes after root dictionary at position ${decoder.pos}")
+            }
             val infoRange = decoder.rootKeyByteRanges["info"]
             return Pair(result, infoRange)
         }

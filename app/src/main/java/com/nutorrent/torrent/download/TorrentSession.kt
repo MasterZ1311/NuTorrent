@@ -44,7 +44,8 @@ class TorrentSession(
     maxPeerConnections: Int = 60,
     val bandwidthManager: com.nutorrent.torrent.network.BandwidthManager? = null,
     val dhtNode: com.nutorrent.torrent.dht.DhtNode? = null,
-    val listenPort: Int = 6881
+    val listenPort: Int = 6881,
+    val initialPeers: Collection<com.nutorrent.core.model.PeerEndpoint> = emptyList()
 ) {
     private val ourPeerId = PeerIdGenerator.generate()
     val pieceManager = PieceManager(metadata)
@@ -70,7 +71,8 @@ class TorrentSession(
 
     private fun setState(newState: TorrentState) {
         val changed = synchronized(this) {
-            if (_state.value == TorrentState.PAUSED || _state.value == TorrentState.QUEUED || _state.value == TorrentState.ERROR) {
+            if ((_state.value == TorrentState.PAUSED || _state.value == TorrentState.QUEUED || _state.value == TorrentState.ERROR || !_state.value.isActive) &&
+                newState != TorrentState.PAUSED && newState != TorrentState.ERROR) {
                 return
             }
             if (_state.value != newState) {
@@ -271,6 +273,9 @@ class TorrentSession(
             listener = peerListener,
             bandwidthManager = bandwidthManager
         )
+        if (initialPeers.isNotEmpty()) {
+            peerManager.addPeers(initialPeers.toList())
+        }
     }
 
     /**
@@ -354,7 +359,9 @@ class TorrentSession(
         val cachedResume = plan.cachedResume
         val isAlreadyComplete = plan.isAlreadyComplete
 
-        val job = scope.launch(Dispatchers.IO) {
+        val job = synchronized(this) {
+            if (_state.value != plan.targetState) return
+            val launched = scope.launch(Dispatchers.IO) {
             try {
                 storage.prepare()
                 ensureActive()
@@ -536,12 +543,8 @@ class TorrentSession(
             }
         }
 
-        synchronized(this) {
-            if (_state.value != plan.targetState) {
-                job.cancel()
-            } else {
-                activeJob = job
-            }
+            activeJob = launched
+            launched
         }
     }
 

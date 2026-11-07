@@ -37,6 +37,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -58,7 +59,11 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
+import com.nutorrent.ui.components.EdgeCaseDetails
+import com.nutorrent.ui.components.EdgeCaseTroubleshootDialog
+import com.nutorrent.ui.components.TroubleshootingStep
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CloudDownload
@@ -73,7 +78,10 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -82,6 +90,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.animation.AnimatedVisibility
@@ -126,6 +136,28 @@ import com.nutorrent.ui.components.MetricChip
 import com.nutorrent.ui.components.PieceProgressBar
 import com.nutorrent.ui.components.StatusBadge
 import com.nutorrent.ui.theme.NuPrimary
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import com.nutorrent.ui.components.AdaptiveNavigationLayout
+import com.nutorrent.ui.components.BatchOperationsSheet
+import com.nutorrent.ui.components.CommandPaletteDialog
+import com.nutorrent.ui.components.DestructiveActionDialog
+import com.nutorrent.ui.components.NavDestination
+import com.nutorrent.ui.components.NoActiveDownloadsEmptyView
+import com.nutorrent.ui.components.NoCompletedEmptyView
+import com.nutorrent.ui.components.NoSearchResultsEmptyView
+import com.nutorrent.ui.components.NoTorrentsEmptyView
+import com.nutorrent.ui.components.SmartFormValidator
+import com.nutorrent.ui.components.TorrentCardSkeleton
+import com.nutorrent.ui.components.TorrentTableView
 import kotlinx.coroutines.launch
 
 enum class TorrentCategory(val label: String) {
@@ -155,7 +187,8 @@ fun HomeScreen(
     onSettingsClick: () -> Unit,
     onPauseClick: (TorrentId) -> Unit,
     onResumeClick: (TorrentId) -> Unit,
-    onDeleteClick: (TorrentId, Boolean) -> Unit
+    onDeleteClick: (TorrentId, Boolean) -> Unit,
+    onCommunityClick: () -> Unit = {}
 ) {
     val torrents by repository.torrentsList.collectAsStateWithLifecycle()
     val currentNetworkStatus by (networkStatus?.collectAsState() ?: androidx.compose.runtime.remember {
@@ -167,7 +200,7 @@ fun HomeScreen(
     val appSettings by ((context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.settings?.collectAsStateWithLifecycle()
         ?: remember { androidx.compose.runtime.mutableStateOf(null) })
     val defaultDownloadPath = appSettings?.defaultDownloadPath
-        ?: java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "Downloads").absolutePath
+        ?: com.nutorrent.data.repository.SettingsRepository.getDefaultDownloadDir(context)
 
     var magnetDownloadPath by remember(defaultDownloadPath) {
         mutableStateOf(defaultDownloadPath)
@@ -190,6 +223,29 @@ fun HomeScreen(
         }
     }
 
+    var errorTargetTorrentId by remember { mutableStateOf<TorrentId?>(null) }
+    val errorFolderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        val targetId = errorTargetTorrentId
+        if (uri != null && targetId != null) {
+            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (e: Exception) {
+                com.nutorrent.core.util.Lg.w(
+                    com.nutorrent.core.util.LogCategory.STORAGE,
+                    "Failed to persist URI permission for error fix: ${e.message}"
+                )
+            }
+            scope.launch {
+                repository.updateTorrentDestination(targetId, uri.toString())
+                repository.resumeTorrent(targetId)
+            }
+        }
+        errorTargetTorrentId = null
+    }
+
     var selectedCategory by remember { mutableStateOf(TorrentCategory.ALL) }
     var currentSortOrder by remember { mutableStateOf(TorrentSortOrder.DATE_ADDED) }
     var sortAscending by remember { mutableStateOf(false) }
@@ -206,11 +262,56 @@ fun HomeScreen(
     var showMagnetInputDialog by remember { mutableStateOf(false) }
     var magnetInputText by remember { mutableStateOf("") }
     var magnetParseError by remember { mutableStateOf<String?>(null) }
+    var showMagnetTroubleshoot by remember { mutableStateOf(false) }
 
-    var isMultiSelectMode by remember { mutableStateOf(false) }
-    val selectedTorrents = remember { mutableStateListOf<TorrentId>() }
+    // Optimistic UI updates
+    val optimisticStates = remember { androidx.compose.runtime.mutableStateMapOf<TorrentId, TorrentState>() }
+    LaunchedEffect(torrents) {
+        torrents.forEach { item ->
+            if (optimisticStates[item.torrentId] == item.state) {
+                optimisticStates.remove(item.torrentId)
+            }
+        }
+    }
+
+    val handlePause: (TorrentId) -> Unit = { id ->
+        optimisticStates[id] = TorrentState.PAUSED
+        onPauseClick(id)
+    }
+
+    val handleResume: (TorrentId) -> Unit = { id ->
+        optimisticStates[id] = TorrentState.DOWNLOADING
+        onResumeClick(id)
+    }
+
+    // Selection & Bulk actions
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(emptySet<TorrentId>()) }
     var showBatchDeleteDialog by remember { mutableStateOf(false) }
     var batchDeleteFilesChecked by remember { mutableStateOf(false) }
+
+    // Command palette & layout view mode
+    var showCommandPalette by remember { mutableStateOf(false) }
+    var isTableView by remember(appSettings?.preferredLayoutMode) {
+        mutableStateOf(appSettings?.preferredLayoutMode == "TABLE")
+    }
+
+    var isInitialLoading by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(300)
+        isInitialLoading = false
+    }
+
+    val freeSpaceFormatted = remember(defaultDownloadPath) {
+        try {
+            val f = java.io.File(defaultDownloadPath)
+            val free = f.usableSpace
+            if (free > 0L) FormatUtils.formatBytes(free) else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
 
     val downloadingCount = torrents.count { it.state.isActive && it.state != TorrentState.SEEDING }
     val seedingCount = torrents.count { it.state == TorrentState.SEEDING }
@@ -236,8 +337,12 @@ fun HomeScreen(
             clipboardText != dismissedClipboardMagnet &&
             torrents.none { clipboardText.contains(it.torrentId.hex, ignoreCase = true) }
 
-    val filteredTorrents = remember(torrents, selectedCategory, searchQuery, currentSortOrder, sortAscending) {
-        val filtered = torrents.filter { item ->
+    val filteredTorrents = remember(torrents, optimisticStates.toMap(), selectedCategory, searchQuery, currentSortOrder, sortAscending) {
+        val mapped = torrents.map { item ->
+            val opt = optimisticStates[item.torrentId]
+            if (opt != null) item.copy(state = opt) else item
+        }
+        val filtered = mapped.filter { item ->
             val matchesCategory = when (selectedCategory) {
                 TorrentCategory.ALL -> true
                 TorrentCategory.DOWNLOADING -> item.state.isActive && item.state != TorrentState.SEEDING
@@ -263,7 +368,56 @@ fun HomeScreen(
         }
     }
 
+    val selectedNavDestination = when (selectedCategory) {
+        TorrentCategory.ALL -> NavDestination.ALL
+        TorrentCategory.DOWNLOADING -> NavDestination.DOWNLOADING
+        TorrentCategory.SEEDING -> NavDestination.SEEDING
+        TorrentCategory.COMPLETED -> NavDestination.COMPLETED
+        else -> NavDestination.ALL
+    }
+
+    AdaptiveNavigationLayout(
+        selectedDestination = selectedNavDestination,
+        onSelectDestination = { dest ->
+            when (dest) {
+                NavDestination.ALL -> selectedCategory = TorrentCategory.ALL
+                NavDestination.DOWNLOADING -> selectedCategory = TorrentCategory.DOWNLOADING
+                NavDestination.SEEDING -> selectedCategory = TorrentCategory.SEEDING
+                NavDestination.COMPLETED -> selectedCategory = TorrentCategory.COMPLETED
+                NavDestination.COMMUNITY -> onCommunityClick()
+                NavDestination.SETTINGS -> onSettingsClick()
+            }
+        },
+        onAddTransferClick = { showAddChooserDialog = true },
+        downloadingCount = downloadingCount,
+        seedingCount = seedingCount,
+        freeDiskSpaceFormatted = freeSpaceFormatted
+    ) { isWideScreen ->
     Scaffold(
+        modifier = Modifier.onKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown) {
+                if (event.isCtrlPressed && event.key == Key.K) {
+                    showCommandPalette = true
+                    true
+                } else if (event.isCtrlPressed && event.key == Key.N) {
+                    onAddTorrentClick()
+                    true
+                } else if (event.isCtrlPressed && event.key == Key.A) {
+                    isSelectionMode = true
+                    selectedIds = filteredTorrents.map { it.torrentId }.toSet()
+                    true
+                } else if (event.key == Key.Escape) {
+                    if (isSelectionMode) {
+                        isSelectionMode = false
+                        selectedIds = emptySet()
+                        true
+                    } else if (showCommandPalette) {
+                        showCommandPalette = false
+                        true
+                    } else false
+                } else false
+            } else false
+        },
         topBar = {
             Column(
                 modifier = Modifier
@@ -289,6 +443,37 @@ fun HomeScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { showCommandPalette = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Terminal,
+                                contentDescription = "Command Palette (Ctrl+K)",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = {
+                            isTableView = !isTableView
+                            appSettings?.let { current ->
+                                (context.applicationContext as? com.nutorrent.NuTorrentApplication)?.settingsRepository?.updateSettings(
+                                    current.copy(preferredLayoutMode = if (isTableView) "TABLE" else "CARDS")
+                                )
+                            }
+                        }) {
+                            Icon(
+                                imageVector = if (isTableView) Icons.Default.ViewAgenda else Icons.Default.TableChart,
+                                contentDescription = if (isTableView) "Switch to Cards" else "Switch to Table View",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = {
+                            isSelectionMode = !isSelectionMode
+                            if (!isSelectionMode) selectedIds = emptySet()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.SelectAll,
+                                contentDescription = if (isSelectionMode) "Cancel Selection" else "Select Multiple",
+                                tint = if (isSelectionMode) NuPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         IconButton(onClick = { isSearchActive = !isSearchActive }) {
                             Icon(
                                 imageVector = if (isSearchActive) Icons.Default.Clear else Icons.Default.Search,
@@ -392,6 +577,7 @@ fun HomeScreen(
                             TorrentCategory.COMPLETED -> completedCount
                             TorrentCategory.ERROR -> errorCount
                         }
+                        if (category != TorrentCategory.ALL && count == 0 && selectedCategory != category) return@items
                         FilterChip(
                             selected = selectedCategory == category,
                             onClick = { selectedCategory = category },
@@ -514,15 +700,18 @@ fun HomeScreen(
                                     magnetInputText = clipboardText ?: ""
                                     showMagnetInputDialog = true
                                 },
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                modifier = Modifier.height(32.dp),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Attract ⚡", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("Attract ⚡", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                             }
                             Spacer(modifier = Modifier.width(4.dp))
                             IconButton(
                                 onClick = { dismissedClipboardMagnet = clipboardText },
-                                modifier = Modifier.size(28.dp)
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .minimumInteractiveComponentSize()
                             ) {
                                 Icon(
                                     Icons.Default.Clear,
@@ -581,58 +770,90 @@ fun HomeScreen(
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
-        if (torrents.isEmpty()) {
-            EmptyHomeState(
+        if (isInitialLoading && torrents.isEmpty()) {
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
-                onAddTorrentClick = onAddTorrentClick,
-                onAddMagnetClick = { showMagnetInputDialog = true }
+                    .padding(padding)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                repeat(4) {
+                    TorrentCardSkeleton()
+                }
+            }
+        } else if (torrents.isEmpty()) {
+            NoTorrentsEmptyView(
+                onAddTorrentFile = onAddTorrentClick,
+                onAddMagnet = { showMagnetInputDialog = true },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
             )
         } else if (filteredTorrents.isEmpty()) {
-            Box(
+            NoSearchResultsEmptyView(
+                query = searchQuery,
+                onClearSearch = { searchQuery = ""; selectedCategory = TorrentCategory.ALL },
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "No torrents match the filter",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+                    .padding(padding)
+            )
+        } else if (isTableView) {
+            TorrentTableView(
+                torrents = filteredTorrents,
+                selectedIds = selectedIds,
+                isSelectionMode = isSelectionMode,
+                currentSortOrder = currentSortOrder,
+                sortAscending = sortAscending,
+                onSortChange = { order ->
+                    if (currentSortOrder == order) sortAscending = !sortAscending
+                    else {
+                        currentSortOrder = order
+                        sortAscending = false
+                    }
+                },
+                onTorrentClick = { onTorrentClick(it) },
+                onToggleSelect = { id ->
+                    selectedIds = if (selectedIds.contains(id)) selectedIds - id else selectedIds + id
+                },
+                onPauseClick = handlePause,
+                onResumeClick = handleResume,
+                onDeleteClick = { deleteTorrentTarget = it },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            )
         } else {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
-                contentPadding = PaddingValues(16.dp),
+                contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 88.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (isMultiSelectMode) {
+                if (isSelectionMode) {
                     item(key = "batchActionBar") {
                         BatchActionBar(
-                            selectedCount = selectedTorrents.size,
+                            selectedCount = selectedIds.size,
                             totalCount = filteredTorrents.size,
                             onSelectAll = {
-                                selectedTorrents.clear()
-                                selectedTorrents.addAll(filteredTorrents.map { it.torrentId })
+                                selectedIds = filteredTorrents.map { it.torrentId }.toSet()
                             },
                             onClearSelection = {
-                                selectedTorrents.clear()
-                                isMultiSelectMode = false
+                                selectedIds = emptySet()
+                                isSelectionMode = false
                             },
                             onPauseSelected = {
-                                val toPause = selectedTorrents.toList()
-                                selectedTorrents.clear()
-                                isMultiSelectMode = false
-                                for (id in toPause) onPauseClick(id)
+                                val toPause = selectedIds.toList()
+                                selectedIds = emptySet()
+                                isSelectionMode = false
+                                for (id in toPause) handlePause(id)
                             },
                             onResumeSelected = {
-                                val toResume = selectedTorrents.toList()
-                                selectedTorrents.clear()
-                                isMultiSelectMode = false
-                                for (id in toResume) onResumeClick(id)
+                                val toResume = selectedIds.toList()
+                                selectedIds = emptySet()
+                                isSelectionMode = false
+                                for (id in toResume) handleResume(id)
                             },
                             onDeleteSelected = {
                                 showBatchDeleteDialog = true
@@ -655,42 +876,56 @@ fun HomeScreen(
                     TorrentCard(
                         item = item,
                         modifier = Modifier.animateItem(),
-                        isSelected = selectedTorrents.contains(item.torrentId),
-                        isMultiSelectMode = isMultiSelectMode,
+                        isSelectionMode = isSelectionMode,
+                        isSelected = selectedIds.contains(item.torrentId),
+                        onToggleSelect = {
+                            NuHaptics.tick(context)
+                            selectedIds = if (selectedIds.contains(item.torrentId)) {
+                                val next = selectedIds - item.torrentId
+                                if (next.isEmpty()) isSelectionMode = false
+                                next
+                            } else {
+                                selectedIds + item.torrentId
+                            }
+                        },
+                        onLongClick = {
+                            NuHaptics.heavyClick(context)
+                            isSelectionMode = true
+                            selectedIds = selectedIds + item.torrentId
+                        },
                         onClick = {
-                            if (isMultiSelectMode) {
+                            if (isSelectionMode) {
                                 NuHaptics.tick(context)
-                                if (selectedTorrents.contains(item.torrentId)) {
-                                    selectedTorrents.remove(item.torrentId)
-                                    if (selectedTorrents.isEmpty()) isMultiSelectMode = false
+                                selectedIds = if (selectedIds.contains(item.torrentId)) {
+                                    val next = selectedIds - item.torrentId
+                                    if (next.isEmpty()) isSelectionMode = false
+                                    next
                                 } else {
-                                    selectedTorrents.add(item.torrentId)
+                                    selectedIds + item.torrentId
                                 }
                             } else {
                                 NuHaptics.click(context)
                                 onTorrentClick(item.torrentId)
                             }
                         },
-                        onLongClick = {
-                            NuHaptics.heavyClick(context)
-                            isMultiSelectMode = true
-                            if (!selectedTorrents.contains(item.torrentId)) {
-                                selectedTorrents.add(item.torrentId)
-                            }
-                        },
-                        onPauseClick = { onPauseClick(item.torrentId) },
-                        onResumeClick = { onResumeClick(item.torrentId) },
+                        onPauseClick = { handlePause(item.torrentId) },
+                        onResumeClick = { handleResume(item.torrentId) },
                         onDeleteClick = {
                             deleteTorrentTarget = item
                             deleteFilesChecked = false
                         },
                         onMoveUp = { repository.moveUpInQueue(item.torrentId) },
                         onMoveDown = { repository.moveDownInQueue(item.torrentId) },
-                        isAdvancedMode = appSettings?.uiMode == "ADVANCED"
+                        isAdvancedMode = appSettings?.uiMode == "ADVANCED",
+                        onErrorLocationClick = {
+                            errorTargetTorrentId = item.torrentId
+                            errorFolderPickerLauncher.launch(null)
+                        }
                     )
                 }
             }
         }
+    }
     }
 
     if (showEngineStatusDialog) {
@@ -700,10 +935,10 @@ fun HomeScreen(
     if (showBatchDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showBatchDeleteDialog = false },
-            title = { Text("Delete ${selectedTorrents.size} Torrents?") },
+            title = { Text("Delete ${selectedIds.size} Torrents?") },
             text = {
                 Column {
-                    Text("Are you sure you want to remove the ${selectedTorrents.size} selected torrent transfers?")
+                    Text("Are you sure you want to remove the ${selectedIds.size} selected torrent transfers?")
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -722,9 +957,9 @@ fun HomeScreen(
                 Button(
                     onClick = {
                         NuHaptics.warning(context)
-                        val toDelete = selectedTorrents.toList()
-                        selectedTorrents.clear()
-                        isMultiSelectMode = false
+                        val toDelete = selectedIds.toList()
+                        selectedIds = emptySet()
+                        isSelectionMode = false
                         showBatchDeleteDialog = false
                         for (id in toDelete) {
                             onDeleteClick(id, batchDeleteFilesChecked)
@@ -849,12 +1084,52 @@ fun HomeScreen(
                     }
 
                     if (magnetParseError != null) {
-                        Text(
-                            text = magnetParseError ?: "",
-                            color = MaterialTheme.colorScheme.error,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = magnetParseError ?: "Invalid magnet link",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(NuPrimary.copy(alpha = 0.12f))
+                                    .clickable { showMagnetTroubleshoot = true }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Troubleshooting Info",
+                                    tint = NuPrimary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Learn why & how to troubleshoot",
+                                    fontSize = 11.5.sp,
+                                    color = NuPrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
                     }
 
                     parsedMagnet?.let { mag ->
@@ -876,6 +1151,12 @@ fun HomeScreen(
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace
                             )
+                            if (mag.exactLength != null && mag.exactLength > 0L) {
+                                Text(
+                                    text = "Size: ${FormatUtils.formatBytes(mag.exactLength)}",
+                                    fontSize = 11.sp
+                                )
+                            }
                             if (mag.trackers.isNotEmpty()) {
                                 Text(
                                     text = "Trackers: ${mag.trackers.size} found",
@@ -960,39 +1241,171 @@ fun HomeScreen(
         )
     }
 
+    if (showMagnetTroubleshoot) {
+        EdgeCaseTroubleshootDialog(
+            details = EdgeCaseDetails(
+                categoryBadge = "MALFORMED // MAGNET URI",
+                badgeColor = com.nutorrent.ui.theme.NuError,
+                simpleHeadline = "Invalid Magnet Link",
+                simpleGlance = "The link you pasted is missing required swarm parameters or was truncated when copied.",
+                whatHappened = "NuTorrent could not extract the exact-topic hash (xt=urn:btih:) from the provided text. BitTorrent clients require this 40-character hex or 32-character Base32 string to find peers in the swarm.",
+                whyItHappened = listOf(
+                    "The link was only partially highlighted before copying.",
+                    "The text is a regular webpage URL (http://) instead of a magnet: link.",
+                    "The source website uses an unsupported or proprietary URI format."
+                ),
+                troubleshootingSteps = listOf(
+                    TroubleshootingStep(
+                        stepNumber = 1,
+                        title = "Copy the full link address",
+                        description = "In your browser, long-press the magnet icon or download button, then select \"Copy link address\". Avoid highlighting the text manually.",
+                        tip = "Manual text selection often misses the end of long URLs."
+                    ),
+                    TroubleshootingStep(
+                        stepNumber = 2,
+                        title = "Check the link prefix",
+                        description = "A valid magnet link starts with \"magnet:?xt=urn:btih:\" followed by the torrent's unique hash.",
+                        tip = "Example: magnet:?xt=urn:btih:1234567890abcdef..."
+                    ),
+                    TroubleshootingStep(
+                        stepNumber = 3,
+                        title = "Open a .torrent file instead",
+                        description = "If the website offers a .torrent file, download it and open it in NuTorrent instead."
+                    )
+                ),
+                technicalDetails = "Pasted Input: $magnetInputText\nError: ${magnetParseError ?: "Unknown parsing error"}"
+            ),
+            onDismiss = { showMagnetTroubleshoot = false }
+        )
+    }
+
+    // Single Destructive Delete Dialog
     deleteTorrentTarget?.let { item ->
-        AlertDialog(
-            onDismissRequest = { deleteTorrentTarget = null },
-            title = { Text("Remove Torrent") },
-            text = {
-                Column {
-                    Text("Are you sure you want to remove \"${item.name}\"?")
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = deleteFilesChecked,
-                            onCheckedChange = { deleteFilesChecked = it }
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Also delete downloaded files from disk", fontSize = 14.sp)
-                    }
+        DestructiveActionDialog(
+            itemCount = 1,
+            singleItemName = item.name,
+            totalBytes = item.totalLength,
+            onConfirmDelete = { deleteFiles ->
+                onDeleteClick(item.torrentId, deleteFiles)
+                deleteTorrentTarget = null
+            },
+            onDismiss = { deleteTorrentTarget = null }
+        )
+    }
+
+    // Batch Destructive Delete Dialog
+    if (showBatchDeleteDialog) {
+        val totalBatchBytes = torrents.filter { it.torrentId in selectedIds }.sumOf { it.totalLength }
+        DestructiveActionDialog(
+            itemCount = selectedIds.size,
+            totalBytes = totalBatchBytes,
+            onConfirmDelete = { deleteFiles ->
+                selectedIds.forEach { id ->
+                    onDeleteClick(id, deleteFiles)
+                }
+                selectedIds = emptySet()
+                isSelectionMode = false
+                showBatchDeleteDialog = false
+            },
+            onDismiss = { showBatchDeleteDialog = false }
+        )
+    }
+
+    // Batch Operations Bottom Sheet
+    if (isSelectionMode && selectedIds.isNotEmpty()) {
+        BatchOperationsSheet(
+            selectedCount = selectedIds.size,
+            totalCount = filteredTorrents.size,
+            onPauseSelected = {
+                selectedIds.forEach { handlePause(it) }
+            },
+            onResumeSelected = {
+                selectedIds.forEach { handleResume(it) }
+            },
+            onMoveUpSelected = {
+                selectedIds.forEach { repository.moveUpInQueue(it) }
+            },
+            onMoveDownSelected = {
+                selectedIds.forEach { repository.moveDownInQueue(it) }
+            },
+            onDeleteSelected = {
+                showBatchDeleteDialog = true
+            },
+            onSelectAll = {
+                if (selectedIds.size == filteredTorrents.size) {
+                    selectedIds = emptySet()
+                } else {
+                    selectedIds = filteredTorrents.map { it.torrentId }.toSet()
                 }
             },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDeleteClick(item.torrentId, deleteFilesChecked)
-                        deleteTorrentTarget = null
-                    }
-                ) {
-                    Text("Remove")
-                }
+            onDismiss = {
+                isSelectionMode = false
+                selectedIds = emptySet()
+            }
+        )
+    }
+
+    // Command Palette Dialog
+    if (showCommandPalette) {
+        CommandPaletteDialog(
+            torrents = torrents,
+            onDismiss = { showCommandPalette = false },
+            onSelectTorrent = { onTorrentClick(it) },
+            onAddFileClick = onAddTorrentClick,
+            onAddMagnetClick = { showMagnetInputDialog = true },
+            onPauseAllClick = {
+                torrents.filter { it.state.isActive }.forEach { handlePause(it.torrentId) }
             },
-            dismissButton = {
-                TextButton(onClick = { deleteTorrentTarget = null }) {
-                    Text("Cancel")
+            onResumeAllClick = {
+                torrents.filter { it.state == TorrentState.PAUSED || it.state == TorrentState.QUEUED }.forEach { handleResume(it.torrentId) }
+            },
+            onFilterDownloading = { selectedCategory = TorrentCategory.DOWNLOADING },
+            onFilterSeeding = { selectedCategory = TorrentCategory.SEEDING },
+            onSettingsClick = onSettingsClick,
+            onCommunityClick = onCommunityClick,
+            onClearCompletedClick = {
+                torrents.filter { it.state.isFinished || it.progress.progressFraction >= 1f }.forEach {
+                    onDeleteClick(it.torrentId, false)
                 }
             }
+        )
+    }
+
+    if (showMagnetTroubleshoot) {
+        EdgeCaseTroubleshootDialog(
+            details = EdgeCaseDetails(
+                categoryBadge = "MALFORMED // MAGNET URI",
+                badgeColor = com.nutorrent.ui.theme.NuError,
+                simpleHeadline = "Invalid Magnet Link",
+                simpleGlance = "The link you pasted is missing required swarm parameters or was truncated when copied.",
+                whatHappened = "NuTorrent could not extract the exact-topic hash (xt=urn:btih:) from the provided text. BitTorrent clients require this 40-character hex or 32-character Base32 string to find peers in the swarm.",
+                whyItHappened = listOf(
+                    "The link was only partially highlighted before copying.",
+                    "The text is a regular webpage URL (http://) instead of a magnet: link.",
+                    "The source website uses an unsupported or proprietary URI format."
+                ),
+                troubleshootingSteps = listOf(
+                    TroubleshootingStep(
+                        stepNumber = 1,
+                        title = "Copy the full link address",
+                        description = "In your browser, long-press the magnet icon or download button, then select \"Copy link address\". Avoid highlighting the text manually.",
+                        tip = "Manual text selection often misses the end of long URLs."
+                    ),
+                    TroubleshootingStep(
+                        stepNumber = 2,
+                        title = "Check the link prefix",
+                        description = "A valid magnet link starts with \"magnet:?xt=urn:btih:\" followed by the torrent's unique hash.",
+                        tip = "Example: magnet:?xt=urn:btih:1234567890abcdef..."
+                    ),
+                    TroubleshootingStep(
+                        stepNumber = 3,
+                        title = "Open a .torrent file instead",
+                        description = "If the website offers a .torrent file, download it and open it in NuTorrent instead."
+                    )
+                ),
+                technicalDetails = "Pasted Input: $magnetInputText\nError: ${magnetParseError ?: "Unknown parsing error"}"
+            ),
+            onDismiss = { showMagnetTroubleshoot = false }
         )
     }
 }
@@ -1012,6 +1425,16 @@ fun EmptyHomeState(
             repeatMode = RepeatMode.Reverse
         ),
         label = "floatOffset"
+    )
+
+    val orbitAngle by emptyTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(4000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "orbit"
     )
 
     Box(
@@ -1053,16 +1476,25 @@ fun EmptyHomeState(
             )
 
             Spacer(modifier = Modifier.height(20.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                FilledTonalButton(onClick = onAddTorrentClick) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                FilledTonalButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = onAddTorrentClick
+                ) {
                     Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Open .torrent")
+                    Text("Open .torrent", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                OutlinedButton(onClick = onAddMagnetClick) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = onAddMagnetClick
+                ) {
                     Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Paste Magnet")
+                    Text("Paste Magnet", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
 
@@ -1088,7 +1520,7 @@ fun EmptyHomeState(
                     Column {
                         Text("Local Storage", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                         Text(
-                            "Files are saved to your device's Downloads directory and are accessible at any time via Settings.",
+                            "Files are saved to your device's internal storage in the 'NuTorrent' directory and are accessible at any time via Settings.",
                             fontSize = 11.sp,
                             lineHeight = 16.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1138,8 +1570,8 @@ fun EmptyHomeState(
     }
 }
 
-@Composable
 @OptIn(ExperimentalFoundationApi::class)
+@Composable
 fun TorrentCard(
     item: TorrentSummaryItem,
     onClick: () -> Unit,
@@ -1150,8 +1582,10 @@ fun TorrentCard(
     onMoveDown: () -> Unit,
     modifier: Modifier = Modifier,
     isAdvancedMode: Boolean = false,
+    onErrorLocationClick: () -> Unit = {},
+    isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
-    isMultiSelectMode: Boolean = false,
+    onToggleSelect: () -> Unit = {},
     onLongClick: () -> Unit = {}
 ) {
     val isActiveTransfer = item.state.isActive && item.state != TorrentState.PAUSED && item.progress.progressFraction < 1f
@@ -1186,7 +1620,7 @@ fun TorrentCard(
         label = "rotY"
     )
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .pointerInput(Unit) {
@@ -1209,11 +1643,15 @@ fun TorrentCard(
                 rotationX = rotX
                 rotationY = rotY
                 cameraDistance = 14f * density
+                shadowElevation = 4f + (kotlin.math.abs(rotX) + kotlin.math.abs(rotY)) * 2f
             }
             .clip(RoundedCornerShape(12.dp))
-            .background(if (isSelected) NuGlassCard.copy(alpha = 0.95f) else MaterialTheme.colorScheme.surface)
+            .background(
+                if (isSelected) NuPrimary.copy(alpha = 0.08f)
+                else MaterialTheme.colorScheme.surface
+            )
             .border(
-                1.dp,
+                if (isSelected) 1.5.dp else 1.dp,
                 if (isSelected) NuPrimary else if (isActiveTransfer) NuPrimary.copy(alpha = activeBorderAlpha) else MaterialTheme.colorScheme.outline,
                 RoundedCornerShape(12.dp)
             )
@@ -1221,8 +1659,13 @@ fun TorrentCard(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .padding(16.dp)
+
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
         // Row 1: Name and Badges
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1233,22 +1676,14 @@ fun TorrentCard(
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (isMultiSelectMode) {
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(if (isSelected) NuPrimary else androidx.compose.ui.graphics.Color.Transparent)
-                            .border(2.dp, if (isSelected) NuPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (isSelected) {
-                            Icon(Icons.Default.Clear, contentDescription = null, tint = androidx.compose.ui.graphics.Color.Black, modifier = Modifier.size(14.dp))
-                        }
-                    }
+                if (isSelectionMode) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onToggleSelect() },
+                        modifier = Modifier.size(24.dp)
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
                 }
-
                 if (isAdvancedMode && item.queuePosition > 0) {
                     Box(
                         modifier = Modifier
@@ -1353,7 +1788,13 @@ fun TorrentCard(
                     horizontalArrangement = Arrangement.End
                 ) {
                     FilledTonalButton(
-                        onClick = onResumeClick,
+                        onClick = {
+                            if (item.error?.action == com.nutorrent.core.model.ErrorAction.CHOOSE_LOCATION) {
+                                onErrorLocationClick()
+                            } else {
+                                onResumeClick()
+                            }
+                        },
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                         modifier = Modifier.height(28.dp)
                     ) {
@@ -1373,7 +1814,10 @@ fun TorrentCard(
         ) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .horizontalScroll(rememberScrollState())
             ) {
                 if (item.progress.downloadSpeedBps > 0) {
                     MetricChip(
@@ -1410,7 +1854,9 @@ fun TorrentCard(
                                 torrentName = item.name
                             )
                         },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier
+                            .size(36.dp)
+                            .minimumInteractiveComponentSize()
                     ) {
                         Icon(
                             imageVector = Icons.Default.FileOpen,
@@ -1426,7 +1872,9 @@ fun TorrentCard(
                     onClick = {
                         com.nutorrent.core.util.FileOpener.openFolder(context, item.destinationPath)
                     },
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier
+                        .size(36.dp)
+                        .minimumInteractiveComponentSize()
                 ) {
                     Icon(
                         imageVector = Icons.Default.Folder,
@@ -1437,16 +1885,31 @@ fun TorrentCard(
                 }
 
                 if (isAdvancedMode && item.state == TorrentState.QUEUED) {
-                    IconButton(onClick = onMoveUp, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up", modifier = Modifier.size(16.dp))
+                    IconButton(
+                        onClick = onMoveUp,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .minimumInteractiveComponentSize()
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up", modifier = Modifier.size(18.dp))
                     }
-                    IconButton(onClick = onMoveDown, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down", modifier = Modifier.size(16.dp))
+                    IconButton(
+                        onClick = onMoveDown,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .minimumInteractiveComponentSize()
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down", modifier = Modifier.size(18.dp))
                     }
                 }
 
                 if (item.state.isActive) {
-                    IconButton(onClick = onPauseClick, modifier = Modifier.size(32.dp)) {
+                    IconButton(
+                        onClick = onPauseClick,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .minimumInteractiveComponentSize()
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Pause,
                             contentDescription = "Pause",
@@ -1455,7 +1918,12 @@ fun TorrentCard(
                         )
                     }
                 } else if (item.state == TorrentState.PAUSED || item.state == TorrentState.QUEUED) {
-                    IconButton(onClick = onResumeClick, modifier = Modifier.size(32.dp)) {
+                    IconButton(
+                        onClick = onResumeClick,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .minimumInteractiveComponentSize()
+                    ) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = "Resume",
@@ -1464,7 +1932,12 @@ fun TorrentCard(
                         )
                     }
                 } else if (item.state == TorrentState.ERROR) {
-                    IconButton(onClick = onResumeClick, modifier = Modifier.size(32.dp)) {
+                    IconButton(
+                        onClick = onResumeClick,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .minimumInteractiveComponentSize()
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
                             contentDescription = "Retry",
@@ -1473,13 +1946,121 @@ fun TorrentCard(
                         )
                     }
                 }
-                IconButton(onClick = onDeleteClick, modifier = Modifier.size(32.dp)) {
+                IconButton(
+                    onClick = onDeleteClick,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .minimumInteractiveComponentSize()
+                ) {
                     Icon(
                         imageVector = Icons.Default.DeleteOutline,
                         contentDescription = "Delete",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp)
                     )
+                }
+            }
+        }
+    }
+
+        // Specular highlight overlay shifts dynamically with 3D tilt
+        if (dragTiltX != 0f || dragTiltY != 0f) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.08f + kotlin.math.abs(dragTiltX).coerceIn(0f, 0.08f)),
+                                Color.Transparent
+                            ),
+                            center = androidx.compose.ui.geometry.Offset(
+                                x = 120f - dragTiltX * 80f,
+                                y = 80f - dragTiltY * 60f
+                            ),
+                            radius = 350f
+                        )
+                    )
+            )
+        }
+    }
+}
+
+@Composable
+fun NoSearchResultsState(
+    searchQuery: String,
+    selectedCategory: TorrentCategory,
+    onClearSearch: () -> Unit,
+    onResetCategory: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val searchTransition = rememberInfiniteTransition(label = "searchFloating")
+    val floatOffset by searchTransition.animateFloat(
+        initialValue = -4f,
+        targetValue = 4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "searchFloat"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier.padding(32.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .size(36.dp)
+                    .graphicsLayer { translationY = floatOffset }
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        if (searchQuery.isNotBlank()) {
+            Text(
+                text = "No results for \"$searchQuery\"",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Try a different torrent name or hash prefix",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            FilledTonalButton(onClick = onClearSearch) {
+                Text("Clear Search")
+            }
+        } else {
+            Text(
+                text = "No ${selectedCategory.label} torrents",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Torrents matching this category will appear here",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (selectedCategory != TorrentCategory.ALL) {
+                Spacer(modifier = Modifier.height(16.dp))
+                FilledTonalButton(onClick = onResetCategory) {
+                    Text("Show All Torrents")
                 }
             }
         }

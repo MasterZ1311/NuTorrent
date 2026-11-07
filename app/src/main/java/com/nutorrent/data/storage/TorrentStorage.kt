@@ -45,9 +45,11 @@ interface TorrentStorage {
  */
 @android.annotation.SuppressLint("UsableSpace")
 open class FileTorrentStorage(
-    val baseDir: File,
+    var baseDir: File,
     val metadata: TorrentMetadata,
-    override var selectedFileIndices: Set<Int>? = null
+    override var selectedFileIndices: Set<Int>? = null,
+    val context: Context? = null,
+    var onDestinationChanged: ((String) -> Unit)? = null
 ) : TorrentStorage {
 
     private val openFiles = mutableMapOf<Int, RandomAccessFile>()
@@ -85,14 +87,38 @@ open class FileTorrentStorage(
     }
 
     override suspend fun prepare() = withContext(Dispatchers.IO) {
-        if (!baseDir.exists()) {
-            if (!baseDir.mkdirs() && !baseDir.exists()) {
-                throw AppError.FileCreationFailed(baseDir.absolutePath, "Cannot create base download directory")
-            }
+        val isBaseDirValid = try {
+            (baseDir.exists() || baseDir.mkdirs()) && com.nutorrent.data.repository.SettingsRepository.isPathWritable(baseDir.absolutePath, context)
+        } catch (_: Throwable) {
+            false
         }
 
-        if (!baseDir.canWrite()) {
-            throw AppError.DestinationNotWritable(baseDir.absolutePath)
+        if (!isBaseDirValid) {
+            // Auto-healing fallback:
+            // If baseDir cannot be created or written to (e.g. Scoped Storage restriction,
+            // deleted directory, or unwritable volume), automatically heal to the app's
+            // guaranteed-writable directory so downloads never fail with "Cannot create base download directory".
+            val safeDir = context?.let { ctx ->
+                File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "NuTorrent").apply {
+                    if (!exists()) mkdirs()
+                }
+            }
+            if (safeDir != null && (safeDir.exists() || safeDir.mkdirs()) && com.nutorrent.data.repository.SettingsRepository.isPathWritable(safeDir.absolutePath, context)) {
+                Lg.w(LogCategory.STORAGE, "Base download directory '${baseDir.absolutePath}' is not creatable/writable; automatically healing to safe app directory '${safeDir.absolutePath}'")
+                baseDir = safeDir
+                onDestinationChanged?.invoke(safeDir.absolutePath)
+            } else {
+                if (!baseDir.exists()) {
+                    throw AppError.FileCreationFailed(
+                        baseDir.absolutePath,
+                        "Cannot create base download directory '${baseDir.absolutePath}'. Please choose a storage location.",
+                        action = com.nutorrent.core.model.ErrorAction.CHOOSE_LOCATION,
+                        actionText = "Choose Folder"
+                    )
+                } else {
+                    throw AppError.DestinationNotWritable(baseDir.absolutePath)
+                }
+            }
         }
 
         val activeFiles = metadata.files.filter { selectedFileIndices?.contains(it.index) ?: true }
@@ -628,18 +654,41 @@ object TorrentStorageFactory {
         context: Context,
         destinationPath: String,
         metadata: TorrentMetadata,
-        selectedFileIndices: Set<Int>? = null
+        selectedFileIndices: Set<Int>? = null,
+        onDestinationChanged: ((String) -> Unit)? = null
     ): TorrentStorage {
         val trimmed = destinationPath.trim()
-        return if (trimmed.startsWith("content://", ignoreCase = true)) {
-            DocumentFileTorrentStorage(context, Uri.parse(trimmed), metadata, selectedFileIndices)
+        val effectivePath = if (trimmed.isBlank()) {
+            val def = com.nutorrent.data.repository.SettingsRepository.getDefaultDownloadDir(context)
+            onDestinationChanged?.invoke(def)
+            def
         } else {
-            val baseDir = if (trimmed.startsWith("file://", ignoreCase = true)) {
-                File(Uri.parse(trimmed).path ?: trimmed.removePrefix("file://"))
+            trimmed
+        }
+
+        return if (effectivePath.startsWith("content://", ignoreCase = true)) {
+            DocumentFileTorrentStorage(context, Uri.parse(effectivePath), metadata, selectedFileIndices)
+        } else {
+            var baseDir = if (effectivePath.startsWith("file://", ignoreCase = true)) {
+                File(Uri.parse(effectivePath).path ?: effectivePath.removePrefix("file://"))
             } else {
-                File(trimmed)
+                File(effectivePath)
             }
-            FileTorrentStorage(baseDir, metadata, selectedFileIndices)
+            if (!com.nutorrent.data.repository.SettingsRepository.isPathWritable(baseDir.absolutePath, context)) {
+                // Guaranteed fallback to app-specific storage if path cannot be created or written
+                val safeFallback = File(context.getExternalFilesDir(null) ?: context.filesDir, "NuTorrent").apply {
+                    if (!exists()) mkdirs()
+                }
+                baseDir = safeFallback
+                onDestinationChanged?.invoke(safeFallback.absolutePath)
+            }
+            FileTorrentStorage(
+                baseDir = baseDir,
+                metadata = metadata,
+                selectedFileIndices = selectedFileIndices,
+                context = context,
+                onDestinationChanged = onDestinationChanged
+            )
         }
     }
 }

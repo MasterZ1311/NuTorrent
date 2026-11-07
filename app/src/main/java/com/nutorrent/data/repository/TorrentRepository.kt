@@ -168,7 +168,16 @@ class TorrentRepository(
                 }
 
                 val metadata = MetainfoParser.parse(entity.rawTorrentBytes)
-                val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(context, entity.destinationPath, metadata)
+                val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
+                    context = context,
+                    destinationPath = entity.destinationPath,
+                    metadata = metadata,
+                    onDestinationChanged = { newPath ->
+                        scope.launch(Dispatchers.IO) {
+                            dao.updateDestinationPath(entity.infoHash, newPath)
+                        }
+                    }
+                )
                 val session = engine.createSession(metadata, storage)
                 session.isSequentialDownload = entity.sequentialDownload
 
@@ -188,6 +197,18 @@ class TorrentRepository(
         autoStart: Boolean = true,
         selectedFileIndices: Set<Int>? = null
     ): TorrentSession = withContext(Dispatchers.IO) {
+        val resolvedDestPath = if (destinationPath.isNotBlank()) {
+            destinationPath
+        } else {
+            SettingsRepository.getDefaultDownloadDir(context)
+        }
+        if (!resolvedDestPath.startsWith("content://", ignoreCase = true)) {
+            val dir = File(resolvedDestPath)
+            if (!dir.exists()) {
+                dir.mkdirs()
+            }
+        }
+
         val infoHex = metadata.torrentId.hex
 
         val entity = TorrentEntity(
@@ -197,7 +218,7 @@ class TorrentRepository(
             pieceLength = metadata.pieceLength,
             piecesCount = metadata.piecesCount,
             rawTorrentBytes = rawBytes,
-            destinationPath = destinationPath,
+            destinationPath = resolvedDestPath,
             state = if (autoStart) TorrentState.DOWNLOADING.name else TorrentState.PAUSED.name
         )
         dao.insertTorrent(entity)
@@ -221,7 +242,17 @@ class TorrentRepository(
         }
         dao.insertTrackers(trackerEntities)
 
-        val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(context, destinationPath, metadata, selectedFileIndices)
+        val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
+            context = context,
+            destinationPath = resolvedDestPath,
+            metadata = metadata,
+            selectedFileIndices = selectedFileIndices,
+            onDestinationChanged = { newPath ->
+                scope.launch(Dispatchers.IO) {
+                    dao.updateDestinationPath(infoHex, newPath)
+                }
+            }
+        )
 
         val session = engine.createSession(metadata, storage)
 
@@ -242,9 +273,13 @@ class TorrentRepository(
         val resolvedDestPath = if (destinationPath.isNotBlank()) {
             destinationPath
         } else {
-            File(context.getExternalFilesDir(null) ?: context.filesDir, "Downloads").apply {
-                if (!exists()) mkdirs()
-            }.absolutePath
+            SettingsRepository.getDefaultDownloadDir(context)
+        }
+        if (!resolvedDestPath.startsWith("content://", ignoreCase = true)) {
+            val dir = File(resolvedDestPath)
+            if (!dir.exists()) {
+                dir.mkdirs()
+            }
         }
 
         val entity = TorrentEntity(
@@ -300,7 +335,7 @@ class TorrentRepository(
             trackers = trackers,
             peerHints = peerHints,
             exactSources = exactSources,
-            onResolved = { metadata, fullTorrentBytes ->
+            onResolved = { metadata, fullTorrentBytes, discoveredPeers ->
                 val infoHex = torrentId.hex
                 dao.updateMetadataForMagnet(
                     infoHash = infoHex,
@@ -334,9 +369,19 @@ class TorrentRepository(
                     dao.insertTrackers(trackerEntities)
                 }
 
-                val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(context, destinationPath, metadata, selectedFileIndices)
+                val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
+                    context = context,
+                    destinationPath = destinationPath,
+                    metadata = metadata,
+                    selectedFileIndices = selectedFileIndices,
+                    onDestinationChanged = { newPath ->
+                        scope.launch(Dispatchers.IO) {
+                            dao.updateDestinationPath(infoHex, newPath)
+                        }
+                    }
+                )
         
-                val session = engine.createSession(metadata, storage)
+                val session = engine.createSession(metadata, storage, initialPeers = discoveredPeers)
 
                 if (autoStart) {
                     engine.startOrQueue(metadata.torrentId)
@@ -358,6 +403,12 @@ class TorrentRepository(
             val trackers = dao.getTrackersForTorrent(entity.infoHash).map { it.url }
             startMagnetMetadataFetch(torrentId, entity.name, trackers, entity.destinationPath, autoStart = true)
             return@withContext
+        }
+        if (entity != null && !SettingsRepository.isPathWritable(entity.destinationPath, context)) {
+            val safeDir = SettingsRepository.getDefaultDownloadDir(context)
+            Lg.w(LogCategory.STORAGE, "Auto-healing destination path for '${entity.name}' from '${entity.destinationPath}' to '$safeDir'")
+            dao.updateDestinationPath(torrentId.hex, safeDir)
+            updateTorrentDestination(torrentId, safeDir)
         }
         dao.updateState(torrentId.hex, TorrentState.DOWNLOADING.name)
         engine.resumeSession(torrentId)
@@ -409,7 +460,17 @@ class TorrentRepository(
         dao.updateDestinationPath(torrentId.hex, newDestination)
         val session = engine.getSession(torrentId)
         if (session != null) {
-            val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(context, newDestination, session.metadata)
+            val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
+                context = context,
+                destinationPath = newDestination,
+                metadata = session.metadata,
+                selectedFileIndices = session.storage.selectedFileIndices,
+                onDestinationChanged = { newPath ->
+                    scope.launch(Dispatchers.IO) {
+                        dao.updateDestinationPath(torrentId.hex, newPath)
+                    }
+                }
+            )
             session.storage = storage
             session.uploadManager.storage = storage
         }

@@ -13,5 +13,8 @@ app/build/
 *.jks
 *.jks*
 *.keystore
+*.p12
+*.pem
+*.pk8
 *.bak
 brag-output/

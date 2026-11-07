@@ -27,6 +27,16 @@ object CommunityTrackersSync {
     const val MAX_BT_TRACKER_LENGTH = 6144
 
     /**
+     * Maximum allowable bytes read from a single remote tracker sync response (256 KiB).
+     */
+    const val MAX_REMOTE_RESPONSE_BYTES = 256 * 1024
+
+    /**
+     * Maximum HTTP redirect hops allowed when fetching remote tracker lists.
+     */
+    const val MAX_HTTP_REDIRECTS = 3
+
+    /**
      * Auto-sync interval: 12 Hours (matches Motrix `AUTO_SYNC_TRACKER_INTERVAL`).
      */
     const val AUTO_SYNC_INTERVAL_MS = 12 * 60 * 60 * 1000L
@@ -65,21 +75,50 @@ object CommunityTrackersSync {
     private val lastSyncTime = AtomicLong(0L)
 
     /**
+     * Checks if a line contains a valid BitTorrent tracker URL.
+     */
+    fun isValidTrackerUrl(url: String): Boolean {
+        return url.isNotEmpty() &&
+            !url.startsWith("#") &&
+            (url.startsWith("udp://", ignoreCase = true) ||
+             url.startsWith("http://", ignoreCase = true) ||
+             url.startsWith("https://", ignoreCase = true) ||
+             url.startsWith("wss://", ignoreCase = true))
+    }
+
+    /**
      * Parses raw tracker text (newlines or comma separated) into a clean list of validated URLs.
      * Filters out blank lines, comments (#), and unsupported protocols.
      */
     fun parseTrackersText(text: String): List<String> {
         return text.split("\r\n", "\n", "\r", ",")
             .map { it.trim() }
-            .filter { line ->
-                line.isNotEmpty() &&
-                !line.startsWith("#") &&
-                (line.startsWith("udp://", ignoreCase = true) ||
-                 line.startsWith("http://", ignoreCase = true) ||
-                 line.startsWith("https://", ignoreCase = true) ||
-                 line.startsWith("wss://", ignoreCase = true))
-            }
+            .filter { isValidTrackerUrl(it) }
             .distinct()
+    }
+
+    /**
+     * Reads character stream incrementally up to maxBytes, parsing and validating tracker URLs.
+     * Enforces limits during streaming to prevent unbounded allocation.
+     */
+    fun readBoundedTrackers(inputStream: java.io.InputStream, maxBytes: Int = MAX_REMOTE_RESPONSE_BYTES): List<String> {
+        val result = mutableListOf<String>()
+        var totalBytesRead = 0
+        BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                totalBytesRead += line.length + 1
+                if (totalBytesRead > maxBytes) {
+                    Lg.w(LogCategory.TRACKER, "[TRACKER_SYNC] Tracker payload exceeded $maxBytes bytes limit; truncated safely.")
+                    break
+                }
+                val trimmed = line.trim()
+                if (isValidTrackerUrl(trimmed)) {
+                    result.add(trimmed)
+                }
+            }
+        }
+        return result.distinct()
     }
 
     /**
@@ -108,32 +147,65 @@ object CommunityTrackersSync {
     }
 
     /**
-     * Fetches tracker list from a remote HTTP/HTTPS source with a strict timeout.
+     * Fetches tracker list from a remote HTTP/HTTPS source with strict size and timeout bounds.
+     * Enforces bounded streaming read and bounded redirect loops.
      */
     suspend fun fetchFromUrl(urlStr: String, timeoutMs: Int = 10000): List<String> = withContext(Dispatchers.IO) {
-        var conn: HttpURLConnection? = null
-        try {
-            val url = URL(urlStr)
-            conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = timeoutMs
-            conn.readTimeout = timeoutMs
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "NuTorrent/1.0.0 (compatible; Motrix/1.8)")
-            conn.instanceFollowRedirects = true
-
-            if (conn.responseCode in 200..299) {
-                val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
-                val content = reader.readText()
-                parseTrackersText(content)
-            } else {
-                emptyList()
+        var currentUrl = urlStr
+        var redirects = 0
+        while (redirects <= MAX_HTTP_REDIRECTS) {
+            if (!currentUrl.startsWith("http://", ignoreCase = true) && !currentUrl.startsWith("https://", ignoreCase = true)) {
+                return@withContext emptyList()
             }
-        } catch (e: Exception) {
-            Lg.w(LogCategory.TRACKER, "[TRACKER_SYNC] Failed fetching from $urlStr: ${e.message}")
-            emptyList()
-        } finally {
-            conn?.disconnect()
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL(currentUrl)
+                conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = timeoutMs
+                    readTimeout = timeoutMs
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "NuTorrent/1.0.0 (compatible; Motrix/1.8)")
+                    instanceFollowRedirects = false // Controlled redirect hops
+                }
+
+                val responseCode = conn.responseCode
+                if (responseCode in 300..399) {
+                    val location = conn.getHeaderField("Location")
+                    if (location.isNullOrBlank()) {
+                        return@withContext emptyList()
+                    }
+                    currentUrl = if (location.startsWith("http://", ignoreCase = true) || location.startsWith("https://", ignoreCase = true)) {
+                        location
+                    } else {
+                        URL(url, location).toString()
+                    }
+                    redirects++
+                    continue
+                }
+
+                if (responseCode in 200..299) {
+                    val declaredLen = conn.contentLengthLong
+                    if (declaredLen > MAX_REMOTE_RESPONSE_BYTES) {
+                        Lg.w(LogCategory.TRACKER, "[TRACKER_SYNC] Content-Length $declaredLen exceeded $MAX_REMOTE_RESPONSE_BYTES bytes")
+                        return@withContext emptyList()
+                    }
+                    return@withContext conn.inputStream.use { stream ->
+                        readBoundedTrackers(stream, MAX_REMOTE_RESPONSE_BYTES)
+                    }
+                } else {
+                    return@withContext emptyList()
+                }
+            } catch (e: Exception) {
+                Lg.w(LogCategory.TRACKER, "[TRACKER_SYNC] Failed fetching from $currentUrl: ${e.message}")
+                return@withContext emptyList()
+            } finally {
+                try {
+                    conn?.disconnect()
+                } catch (_: Exception) {}
+            }
         }
+        Lg.w(LogCategory.TRACKER, "[TRACKER_SYNC] Exceeded max redirects fetching $urlStr")
+        emptyList()
     }
 
     /**

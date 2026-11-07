@@ -69,7 +69,7 @@ object FormatUtils {
      */
     fun decodeUriString(uriString: String): String {
         return try {
-            android.net.Uri.decode(uriString)
+            android.net.Uri.decode(uriString) ?: uriString
         } catch (e: Exception) {
             uriString
         }
@@ -81,23 +81,58 @@ object FormatUtils {
     fun formatStoragePath(path: String): String {
         val trimmed = path.trim()
         if (trimmed.startsWith("content://", ignoreCase = true)) {
-            val uri = android.net.Uri.parse(trimmed)
+            val decodedStr = try {
+                java.net.URLDecoder.decode(trimmed, "UTF-8")
+            } catch (_: Throwable) {
+                trimmed
+            }
+            if (decodedStr.contains("primary:", ignoreCase = true)) {
+                val afterPrimary = decodedStr.substringAfter("primary:").substringBefore('?').trim('/')
+                val clean = if (afterPrimary.isNotBlank()) "Internal Storage / $afterPrimary" else "Internal Storage"
+                return clean.replace(':', '/')
+            }
+            if (decodedStr.contains("/tree/", ignoreCase = true)) {
+                val segment = decodedStr.substringAfterLast("/tree/").substringBefore('?')
+                val sub = segment.substringAfterLast(':').substringAfterLast('/')
+                if (sub.isNotBlank()) {
+                    return "Storage: $sub"
+                }
+            }
+            val uri = try { android.net.Uri.parse(trimmed) } catch (e: Throwable) { null }
             val docId = try {
-                if (android.provider.DocumentsContract.isTreeUri(uri)) {
+                if (uri != null && android.provider.DocumentsContract.isTreeUri(uri)) {
                     android.provider.DocumentsContract.getTreeDocumentId(uri)
-                } else uri.lastPathSegment
-            } catch (e: Exception) {
-                uri.lastPathSegment
+                } else uri?.lastPathSegment
+            } catch (e: Throwable) {
+                uri?.lastPathSegment
             }
             if (docId != null) {
                 val decoded = decodeUriString(docId)
                 val clean = decoded.replace("primary:", "Internal Storage / ").replace(':', '/')
                 return clean
             }
-            return "SAF: ${uri.authority ?: "Folder"}"
+            return "SAF: ${uri?.authority ?: "Folder"}"
         }
-        if (trimmed.contains("/Android/data/com.nutorrent/files")) {
-            return "App Private Storage (Downloads)"
+        if (trimmed.endsWith("/NuTorrent") || trimmed.endsWith("\\NuTorrent") || trimmed.contains("/NuTorrent/") || trimmed.contains("\\NuTorrent\\")) {
+            if (trimmed.contains("/Android/data/com.nutorrent/files") || trimmed.contains("\\Android\\data\\com.nutorrent\\files")) {
+                return "Internal Storage / NuTorrent (App Storage)"
+            }
+            if (trimmed.startsWith("/storage/emulated/0/")) {
+                return trimmed.replace("/storage/emulated/0/", "Internal Storage / ")
+            }
+            if (trimmed.startsWith("/storage/emulated/0")) {
+                return trimmed.replace("/storage/emulated/0", "Internal Storage / ")
+            }
+            return "Internal Storage / NuTorrent"
+        }
+        if (trimmed.contains("/Android/data/com.nutorrent/files") || trimmed.contains("\\Android\\data\\com.nutorrent\\files")) {
+            return "Internal Storage / NuTorrent (App Storage)"
+        }
+        if (trimmed.startsWith("/storage/emulated/0/")) {
+            return trimmed.replace("/storage/emulated/0/", "Internal Storage / ")
+        }
+        if (trimmed.startsWith("/storage/emulated/0")) {
+            return trimmed.replace("/storage/emulated/0", "Internal Storage / ")
         }
         return trimmed
     }
