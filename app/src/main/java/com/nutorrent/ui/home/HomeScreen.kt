@@ -920,6 +920,9 @@ fun HomeScreen(
                         onErrorLocationClick = {
                             errorTargetTorrentId = item.torrentId
                             errorFolderPickerLauncher.launch(null)
+                        },
+                        onForceRecheckClick = {
+                            scope.launch { repository.forceRecheck(item.torrentId) }
                         }
                     )
                 }
@@ -1583,6 +1586,7 @@ fun TorrentCard(
     modifier: Modifier = Modifier,
     isAdvancedMode: Boolean = false,
     onErrorLocationClick: () -> Unit = {},
+    onForceRecheckClick: () -> Unit = {},
     isSelectionMode: Boolean = false,
     isSelected: Boolean = false,
     onToggleSelect: () -> Unit = {},
@@ -1789,10 +1793,10 @@ fun TorrentCard(
                 ) {
                     FilledTonalButton(
                         onClick = {
-                            if (item.error?.action == com.nutorrent.core.model.ErrorAction.CHOOSE_LOCATION) {
-                                onErrorLocationClick()
-                            } else {
-                                onResumeClick()
+                            when (item.error?.action) {
+                                com.nutorrent.core.model.ErrorAction.CHOOSE_LOCATION -> onErrorLocationClick()
+                                com.nutorrent.core.model.ErrorAction.FORCE_RECHECK -> onForceRecheckClick()
+                                else -> onResumeClick()
                             }
                         },
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),

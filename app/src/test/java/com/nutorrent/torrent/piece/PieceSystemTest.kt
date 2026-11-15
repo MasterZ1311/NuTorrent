@@ -188,4 +188,56 @@ class PieceSystemTest {
         assertTrue(manager.isComplete())
         assertTrue(manager.ourBitfield.hasPiece(0))
     }
+
+    @Test
+    fun `test maxConcurrentPieces budget scaling for high swarm saturation`() {
+        fun makeMeta(pieceLength: Long): TorrentMetadata {
+            return TorrentMetadata(
+                torrentId = TorrentId(ByteArray(20)),
+                name = "test",
+                pieceLength = pieceLength,
+                totalLength = pieceLength * 10,
+                piecesCount = 10,
+                pieceHashes = List(10) { ByteArray(20) },
+                files = listOf(TorrentFile(0, "test", pieceLength * 10, 0, pieceLength * 10)),
+                announceList = emptyList()
+            )
+        }
+
+        val managerSmall = PieceManager(makeMeta(256 * 1024L))
+        assertEquals(128, managerSmall.maxConcurrentPieces)
+
+        val managerMedium = PieceManager(makeMeta(1024 * 1024L))
+        assertEquals(64, managerMedium.maxConcurrentPieces)
+
+        val manager2MB = PieceManager(makeMeta(2 * 1024 * 1024L))
+        assertEquals(40, manager2MB.maxConcurrentPieces)
+
+        val managerHuge = PieceManager(makeMeta(16 * 1024 * 1024L))
+        assertEquals(8, managerHuge.maxConcurrentPieces)
+    }
+
+    @Test
+    fun `test stalled pending block recovery under high concurrency`() {
+        val pieceLen = 4 * 16384 // 4 blocks
+        val downloader = PieceDownloader(0, pieceLen, ByteArray(20), blockSize = 16384)
+        assertEquals(4, downloader.blocks.size)
+
+        // Request block 0
+        val block0 = downloader.getNextUnrequestedBlock()
+        assertNotNull(block0)
+
+        // Block 0 was requested just now -> not stalled
+        assertNull(downloader.getStalledPendingBlock(stalledThresholdMs = 3000L))
+
+        // When blocks are pending past threshold, it is returned for racing
+        // Simulate stalled timestamp by requesting all remaining blocks and querying with 0ms threshold
+        downloader.getNextUnrequestedBlock()
+        downloader.getNextUnrequestedBlock()
+        downloader.getNextUnrequestedBlock()
+
+        val stalled = downloader.getStalledPendingBlock(stalledThresholdMs = -1L)
+        assertNotNull(stalled)
+        assertEquals(0, stalled?.pieceIndex)
+    }
 }

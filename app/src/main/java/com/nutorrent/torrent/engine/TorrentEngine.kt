@@ -441,6 +441,7 @@ class TorrentEngine(
             trackerClient = trackerClient ?: com.nutorrent.torrent.tracker.DefaultTrackerClient(),
             dhtNode = dhtNode,
             scope = engineScope,
+            maxConnections = 80,
             peerHints = peerHints,
             exactSources = exactSources,
             listenPort = port,

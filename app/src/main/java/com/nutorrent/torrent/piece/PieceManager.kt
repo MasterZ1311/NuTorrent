@@ -25,10 +25,13 @@ class PieceManager(
     private val pieceStates = Array(totalPieces) { PieceState.MISSING }
     private val pieceAvailability = IntArray(totalPieces) { 0 }
     val maxConcurrentPieces: Int = when {
-        metadata.pieceLength >= 8L * 1024 * 1024 -> 4
-        metadata.pieceLength >= 4L * 1024 * 1024 -> 6
-        metadata.pieceLength >= 2L * 1024 * 1024 -> 8
-        else -> 12
+        metadata.pieceLength >= 16L * 1024 * 1024 -> 8   // 128 MB max buffer
+        metadata.pieceLength >= 8L * 1024 * 1024 -> 16   // 128 MB max buffer
+        metadata.pieceLength >= 4L * 1024 * 1024 -> 24   // 96 MB max buffer
+        metadata.pieceLength >= 2L * 1024 * 1024 -> 40   // 80 MB max buffer
+        metadata.pieceLength >= 1L * 1024 * 1024 -> 64   // 64 MB max buffer
+        metadata.pieceLength >= 512L * 1024 -> 96        // 48 MB max buffer
+        else -> 128                                      // <= 32 MB max buffer
     }
     private val activeDownloaders = ConcurrentHashMap<Int, PieceDownloader>()
     private val filePriorities = Array(metadata.files.size) { FilePriority.NORMAL }

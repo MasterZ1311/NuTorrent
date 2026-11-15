@@ -129,4 +129,44 @@ class MetadataExchangeTest {
         val reRequestedPiece = exchange.getNextNeededPiece(excludeInFlight = true)
         assertEquals(1, reRequestedPiece)
     }
+
+    @Test
+    fun `test getNextNeededPieces pipelines multiple pieces per peer`() {
+        val totalSize = 100000 // ~7 pieces of 16 KiB
+        val dummyMetadata = ByteArray(totalSize) { 0x42 }
+        val sha1 = MessageDigest.getInstance("SHA-1").digest(dummyMetadata)
+        val infoHash = TorrentId(sha1)
+
+        val exchange = MetadataExchange(expectedInfoHash = infoHash)
+        exchange.setMetadataSize(totalSize)
+        assertEquals(7, exchange.totalPieces)
+
+        // Request 4 pieces for Peer 1
+        val peer1Pieces = exchange.getNextNeededPieces(maxCount = 4, allowRacing = false)
+        assertEquals(listOf(0, 1, 2, 3), peer1Pieces)
+        peer1Pieces.forEach { exchange.markPieceRequested(it) }
+
+        // Request 3 remaining pieces for Peer 2
+        val peer2Pieces = exchange.getNextNeededPieces(maxCount = 4, allowRacing = false)
+        assertEquals(listOf(4, 5, 6), peer2Pieces)
+        peer2Pieces.forEach { exchange.markPieceRequested(it) }
+
+        // All 7 pieces in flight -> no unrequested pieces left
+        val peer3Pieces = exchange.getNextNeededPieces(maxCount = 4, allowRacing = false)
+        assertTrue(peer3Pieces.isEmpty())
+    }
+
+    @Test
+    fun `test speculative racing of piece 0 across initial peers when totalPieces is 0`() {
+        val infoHash = TorrentId(ByteArray(20) { 0x11 })
+        val exchange = MetadataExchange(expectedInfoHash = infoHash)
+        assertEquals(0, exchange.totalPieces)
+
+        // Multiple peers should be allowed to race piece 0 simultaneously
+        for (peerIndex in 0 until 5) {
+            val pieces = exchange.getNextNeededPieces(maxCount = 1, allowRacing = true)
+            assertEquals("Peer $peerIndex should be given piece 0 to race", listOf(0), pieces)
+            exchange.markPieceRequested(0)
+        }
+    }
 }

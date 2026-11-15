@@ -37,7 +37,7 @@ class MagnetMetadataFetcher(
     private val trackerClient: TrackerClient = DefaultTrackerClient(),
     private val dhtNode: DhtNode? = null,
     private val scope: CoroutineScope,
-    private val maxConnections: Int = 40,
+    private val maxConnections: Int = 80,
     val peerHints: List<String> = emptyList(),
     val exactSources: List<String> = emptyList(),
     val listenPort: Int = 0,
@@ -50,7 +50,7 @@ class MagnetMetadataFetcher(
         trackerClient: TrackerClient = DefaultTrackerClient(),
         dhtNode: DhtNode? = null,
         scope: CoroutineScope,
-        maxConnections: Int = 40,
+        maxConnections: Int = 80,
         peerHints: List<String> = emptyList(),
         exactSources: List<String> = emptyList(),
         listenPort: Int = 0,
@@ -283,7 +283,7 @@ class MagnetMetadataFetcher(
         val availableActiveSlots = maxConnections - activeConnections.size
         if (availableActiveSlots <= 0) return
 
-        val maxPendingDials = 30
+        val maxPendingDials = 50
         val pendingSlots = maxPendingDials - pendingConnections.size
         if (pendingSlots <= 0) return
 
@@ -324,7 +324,7 @@ class MagnetMetadataFetcher(
                 peer.disconnect()
             } else {
                 scope.launch(Dispatchers.IO) {
-                    delay(3000L)
+                    delay(1500L) // Responsive 1.5s grace period for extension handshake
                     if (!isResolved.get() && isRunning.get() && activeConnections.containsKey(peer.endpoint)) {
                         if (!peer.peerExtensions.containsKey("ut_metadata")) {
                             peer.disconnect()
@@ -404,23 +404,24 @@ class MagnetMetadataFetcher(
 
     private fun dispatchNextMetadataRequest(peer: PeerConnection) {
         if (!peer.peerExtensions.containsKey("ut_metadata")) return
-        val nextPiece = metadataExchange.getNextNeededPiece(excludeInFlight = true)
-            ?: metadataExchange.getNextNeededPiece(excludeInFlight = false)
-            ?: return
-
-        metadataExchange.markPieceRequested(nextPiece)
-        peer.sendMetadataRequest(nextPiece)
-        Lg.d(LogCategory.METAINFO, "Requested metadata piece $nextPiece from ${peer.endpoint}")
+        val neededPieces = metadataExchange.getNextNeededPieces(maxCount = 4, allowRacing = true)
+        for (nextPiece in neededPieces) {
+            metadataExchange.markPieceRequested(nextPiece)
+            peer.sendMetadataRequest(nextPiece)
+            Lg.d(LogCategory.METAINFO, "Requested metadata piece $nextPiece from ${peer.endpoint}")
+        }
     }
 
     private fun dispatchWorkToIdlePeers() {
         if (isResolved.get() || !isRunning.get()) return
         for (peer in activeConnections.values) {
             if (peer.peerExtensions.containsKey("ut_metadata")) {
-                val next = metadataExchange.getNextNeededPiece(excludeInFlight = true) ?: break
-                metadataExchange.markPieceRequested(next)
-                peer.sendMetadataRequest(next)
-                Lg.d(LogCategory.METAINFO, "Pipelined metadata piece $next to peer ${peer.endpoint}")
+                val needed = metadataExchange.getNextNeededPieces(maxCount = 2, allowRacing = true)
+                for (next in needed) {
+                    metadataExchange.markPieceRequested(next)
+                    peer.sendMetadataRequest(next)
+                    Lg.d(LogCategory.METAINFO, "Pipelined/raced metadata piece $next to peer ${peer.endpoint}")
+                }
             }
         }
     }

@@ -76,8 +76,8 @@ class PieceDownloader(
         return BlockRequest(pieceIndex, block.offset, block.length)
     }
 
-    fun getStalledPendingBlock(stalledThresholdMs: Long = 4000L): BlockRequest? {
-        if (remainingBlocksCount() > 2) return null
+    fun getStalledPendingBlock(stalledThresholdMs: Long = 3000L): BlockRequest? {
+        if (remainingBlocksCount() > 8) return null
         val now = System.currentTimeMillis()
         for (i in blocks.indices) {
             val block = blocks[i]

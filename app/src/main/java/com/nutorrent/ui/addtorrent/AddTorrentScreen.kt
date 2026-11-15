@@ -125,30 +125,44 @@ fun AddTorrentScreen(
         withContext(Dispatchers.IO) {
             try {
                 val bytes = readUriBytes(context, fileUri)
-                val textCandidate = try { String(bytes, Charsets.UTF_8).trim() } catch (_: Exception) { "" }
-                val isLikelyMagnet = textCandidate.startsWith("magnet:", ignoreCase = true) ||
-                    textCandidate.startsWith("thunder://", ignoreCase = true) ||
-                    textCandidate.contains("xt=urn:btih:", ignoreCase = true) ||
-                    textCandidate.contains("xt=urn:btmh:", ignoreCase = true) ||
-                    fileUri.toString().endsWith(".magnet", ignoreCase = true)
 
-                if (isLikelyMagnet) {
-                    try {
-                        val magnet = com.nutorrent.torrent.metainfo.MagnetUri.parse(textCandidate)
-                        repository.addMagnetTorrent(magnet, destinationPath, autoStart = true)
-                        withContext(Dispatchers.Main) {
-                            onStartDownload()
-                        }
-                        return@withContext
-                    } catch (_: Exception) {}
+                // Fast path: avoid converting entire multi-megabyte torrent file into a UTF-8 string.
+                // A .torrent file always begins with 'd' (0x64) or UTF-8 BOM (0xEF, 0xBB, 0xBF) followed by 'd'.
+                val isBencodeStart = bytes.isNotEmpty() && (
+                    bytes[0] == 'd'.code.toByte() ||
+                    (bytes.size >= 4 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() && bytes[3] == 'd'.code.toByte())
+                )
+
+                if (!isBencodeStart) {
+                    // Check if input stream is a text magnet or thunder URI without allocating large strings
+                    val checkLen = minOf(bytes.size, 4096)
+                    val prefixCandidate = try { String(bytes, 0, checkLen, Charsets.UTF_8).trim() } catch (_: Exception) { "" }
+                    val isLikelyMagnet = prefixCandidate.startsWith("magnet:", ignoreCase = true) ||
+                        prefixCandidate.startsWith("thunder://", ignoreCase = true) ||
+                        prefixCandidate.contains("xt=urn:btih:", ignoreCase = true) ||
+                        prefixCandidate.contains("xt=urn:btmh:", ignoreCase = true) ||
+                        fileUri.toString().endsWith(".magnet", ignoreCase = true)
+
+                    if (isLikelyMagnet) {
+                        try {
+                            val fullCandidate = try { String(bytes, Charsets.UTF_8).trim() } catch (_: Exception) { prefixCandidate }
+                            val magnet = com.nutorrent.torrent.metainfo.MagnetUri.parse(fullCandidate)
+                            repository.addMagnetTorrent(magnet, destinationPath, autoStart = true)
+                            withContext(Dispatchers.Main) {
+                                onStartDownload()
+                            }
+                            return@withContext
+                        } catch (_: Exception) {}
+                    }
                 }
 
                 val meta = try {
                     MetainfoParser.parse(bytes)
                 } catch (bencodeErr: Exception) {
-                    if (textCandidate.isNotEmpty()) {
+                    val fullCandidate = try { String(bytes, Charsets.UTF_8).trim() } catch (_: Exception) { "" }
+                    if (fullCandidate.isNotEmpty()) {
                         try {
-                            val magnet = com.nutorrent.torrent.metainfo.MagnetUri.parse(textCandidate)
+                            val magnet = com.nutorrent.torrent.metainfo.MagnetUri.parse(fullCandidate)
                             repository.addMagnetTorrent(magnet, destinationPath, autoStart = true)
                             withContext(Dispatchers.Main) {
                                 onStartDownload()
@@ -638,7 +652,7 @@ fun AddTorrentScreen(
 private fun readUriBytes(context: Context, uri: Uri): ByteArray {
     val inputStream: InputStream = context.contentResolver.openInputStream(uri)
         ?: throw IllegalStateException("Could not open input stream from URI: $uri")
-    val buffer = ByteArray(4096)
+    val buffer = ByteArray(65536) // 64 KiB buffer for fast I/O
     val out = ByteArrayOutputStream()
     inputStream.use { s ->
         var read: Int

@@ -221,8 +221,6 @@ class TorrentRepository(
             destinationPath = resolvedDestPath,
             state = if (autoStart) TorrentState.DOWNLOADING.name else TorrentState.PAUSED.name
         )
-        dao.insertTorrent(entity)
-
         val fileEntities = metadata.files.map { f ->
             TorrentFileEntity(
                 torrentInfoHash = infoHex,
@@ -231,7 +229,6 @@ class TorrentRepository(
                 length = f.length
             )
         }
-        dao.insertFiles(fileEntities)
 
         val trackerEntities = metadata.announceList.mapIndexed { idx, url ->
             TrackerEntity(
@@ -240,7 +237,8 @@ class TorrentRepository(
                 tier = idx
             )
         }
-        dao.insertTrackers(trackerEntities)
+
+        dao.insertTorrentWithFilesAndTrackers(entity, fileEntities, trackerEntities)
 
         val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
             context = context,
@@ -293,8 +291,6 @@ class TorrentRepository(
             state = if (autoStart) TorrentState.FETCHING_METADATA.name else TorrentState.PAUSED.name,
             isMagnet = true
         )
-        dao.insertTorrent(entity)
-
         val trackerEntities = magnet.trackers.mapIndexed { idx, url ->
             TrackerEntity(
                 torrentInfoHash = infoHex,
@@ -302,9 +298,7 @@ class TorrentRepository(
                 tier = idx
             )
         }
-        if (trackerEntities.isNotEmpty()) {
-            dao.insertTrackers(trackerEntities)
-        }
+        dao.insertTorrentWithFilesAndTrackers(entity, emptyList(), trackerEntities)
 
         if (autoStart) {
             startMagnetMetadataFetch(
@@ -411,6 +405,24 @@ class TorrentRepository(
             updateTorrentDestination(torrentId, safeDir)
         }
         dao.updateState(torrentId.hex, TorrentState.DOWNLOADING.name)
+        if (engine.getSession(torrentId) == null && entity != null && !entity.isMagnet && entity.rawTorrentBytes.isNotEmpty()) {
+            try {
+                val metadata = MetainfoParser.parse(entity.rawTorrentBytes)
+                val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
+                    context = context,
+                    destinationPath = entity.destinationPath,
+                    metadata = metadata,
+                    onDestinationChanged = { newPath ->
+                        scope.launch(Dispatchers.IO) {
+                            dao.updateDestinationPath(entity.infoHash, newPath)
+                        }
+                    }
+                )
+                engine.createSession(metadata, storage)
+            } catch (e: Exception) {
+                Lg.e(LogCategory.STORAGE, "Failed to restore session on resume for ${entity.name}", e)
+            }
+        }
         engine.resumeSession(torrentId)
     }
 

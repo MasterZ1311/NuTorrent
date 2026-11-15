@@ -22,6 +22,21 @@ interface TorrentDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTorrent(torrent: TorrentEntity)
 
+    @Transaction
+    suspend fun insertTorrentWithFilesAndTrackers(
+        torrent: TorrentEntity,
+        files: List<TorrentFileEntity>,
+        trackers: List<TrackerEntity>
+    ) {
+        insertTorrent(torrent)
+        if (files.isNotEmpty()) {
+            insertFiles(files)
+        }
+        if (trackers.isNotEmpty()) {
+            insertTrackers(trackers)
+        }
+    }
+
     @Query("UPDATE torrents SET state = :state WHERE infoHash = :infoHash")
     suspend fun updateState(infoHash: String, state: String)
 

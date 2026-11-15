@@ -19,13 +19,14 @@ class MetadataExchange(
 
     private val receivedPieces = ConcurrentHashMap<Int, ByteArray>()
     private val inFlightRequests = ConcurrentHashMap<Int, Long>()
+    private val piece0RequestCount = java.util.concurrent.atomic.AtomicInteger(0)
     var totalPieces: Int = if (metadataSize > 0) calculatePiecesCount(metadataSize) else 0
         private set
 
     companion object {
         const val MAX_METADATA_SIZE = 10 * 1024 * 1024 // 10 MiB safety bound
         const val PIECE_SIZE = 16384 // 16 KiB
-        const val PIECE_REQUEST_TIMEOUT_MS = 2500L // 2.5s timeout for in-flight piece before re-requesting
+        const val PIECE_REQUEST_TIMEOUT_MS = 1200L // 1.2s timeout for in-flight piece before re-requesting/racing
 
         fun calculatePiecesCount(totalSize: Int): Int {
             return (totalSize + PIECE_SIZE - 1) / PIECE_SIZE
@@ -50,60 +51,81 @@ class MetadataExchange(
     }
 
     /**
+     * Selects up to [maxCount] metadata pieces to request for a peer.
+     * Supports pipelining across multiple pieces, speculative duplicate racing
+     * across initial peers for piece 0 (up to 6 peers), and rapid timeout recovery.
+     */
+    fun getNextNeededPieces(maxCount: Int = 4, allowRacing: Boolean = true): List<Int> {
+        val now = System.currentTimeMillis()
+        if (totalPieces == 0) {
+            if (receivedPieces.containsKey(0)) return emptyList()
+            val reqTime = inFlightRequests[0]
+            val count = piece0RequestCount.get()
+            // Speculative racing: allow requesting piece 0 from up to 6 peers simultaneously
+            if (reqTime == null || (now - reqTime) > PIECE_REQUEST_TIMEOUT_MS || (allowRacing && count < 6)) {
+                return listOf(0)
+            }
+            return emptyList()
+        }
+
+        val result = mutableListOf<Int>()
+        // 1. Unrequested missing pieces or timed-out pieces
+        for (i in 0 until totalPieces) {
+            if (result.size >= maxCount) break
+            if (!receivedPieces.containsKey(i)) {
+                val reqTime = inFlightRequests[i]
+                if (reqTime == null || (now - reqTime) > PIECE_REQUEST_TIMEOUT_MS) {
+                    result.add(i)
+                }
+            }
+        }
+
+        // 2. If we still have pipeline capacity and allowRacing, race pieces pending > 800ms
+        if (result.size < maxCount && allowRacing) {
+            val pendingCandidates = (0 until totalPieces)
+                .filter { !receivedPieces.containsKey(it) && it !in result }
+                .mapNotNull { i -> inFlightRequests[i]?.let { time -> i to time } }
+                .filter { (now - it.second) > 800L }
+                .sortedBy { it.second }
+                .map { it.first }
+
+            for (piece in pendingCandidates) {
+                if (result.size >= maxCount) break
+                result.add(piece)
+            }
+        }
+
+        return result
+    }
+
+    /**
      * Selects the next metadata piece to request.
      * When [excludeInFlight] is true, prioritizes pieces that have not yet been requested from any peer,
      * or whose previous request has timed out (> [PIECE_REQUEST_TIMEOUT_MS]).
      * If all remaining pieces are currently in-flight, returns the oldest pending piece for duplicate racing.
      */
     fun getNextNeededPiece(excludeInFlight: Boolean = true): Int? {
-        val now = System.currentTimeMillis()
-        if (totalPieces == 0) {
-            if (receivedPieces.containsKey(0)) return null
-            if (excludeInFlight) {
-                val reqTime = inFlightRequests[0]
-                if (reqTime != null && (now - reqTime) < PIECE_REQUEST_TIMEOUT_MS) {
-                    return null
-                }
-            }
-            return 0
-        }
-
-        // 1. Look for unrequested missing pieces or timed-out in-flight pieces
-        for (i in 0 until totalPieces) {
-            if (!receivedPieces.containsKey(i)) {
-                val reqTime = inFlightRequests[i]
-                if (!excludeInFlight || reqTime == null || (now - reqTime) > PIECE_REQUEST_TIMEOUT_MS) {
-                    return i
-                }
-            }
-        }
-
-        // 2. If all missing pieces are in-flight, race the oldest piece that has been pending > 1500ms
-        var oldestPiece: Int? = null
-        var oldestTime = Long.MAX_VALUE
-        for (i in 0 until totalPieces) {
-            if (!receivedPieces.containsKey(i)) {
-                val reqTime = inFlightRequests[i]
-                if (reqTime != null && (now - reqTime) > 1500L && reqTime < oldestTime) {
-                    oldestTime = reqTime
-                    oldestPiece = i
-                }
-            }
-        }
-
-        return oldestPiece
+        val pieces = getNextNeededPieces(maxCount = 1, allowRacing = !excludeInFlight)
+        return pieces.firstOrNull()
     }
 
     fun markPieceRequested(pieceIndex: Int) {
         inFlightRequests[pieceIndex] = System.currentTimeMillis()
+        if (pieceIndex == 0) {
+            piece0RequestCount.incrementAndGet()
+        }
     }
 
     fun onPieceFailed(pieceIndex: Int) {
         inFlightRequests.remove(pieceIndex)
+        if (pieceIndex == 0) {
+            piece0RequestCount.decrementAndGet().coerceAtLeast(0)
+        }
     }
 
     fun clearInFlight() {
         inFlightRequests.clear()
+        piece0RequestCount.set(0)
     }
 
     /**
@@ -114,6 +136,9 @@ class MetadataExchange(
     fun onPieceReceived(pieceIndex: Int, totalSize: Int, data: ByteArray): ByteArray? {
         setMetadataSize(totalSize)
         inFlightRequests.remove(pieceIndex)
+        if (pieceIndex == 0) {
+            piece0RequestCount.set(0)
+        }
         if (totalPieces == 0 || pieceIndex < 0 || pieceIndex >= totalPieces) {
             Lg.w(LogCategory.METAINFO, "Metadata piece index out of bounds: $pieceIndex (total: $totalPieces)")
             return null
