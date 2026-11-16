@@ -257,4 +257,31 @@ class FileTorrentStorageTest {
         }
         assertFalse("Evil file should not have been created", evilFile.exists())
     }
+
+    @Test
+    fun `test FileTorrentStorage prepare throws FileCreationFailed when baseDir cannot be created`() = runBlocking {
+        val unwritableFile = tempFolder.newFile("unwritable_file_as_dir")
+        val meta = TorrentMetadata(
+            torrentId = TorrentId(ByteArray(20)),
+            name = "test_unwritable",
+            pieceLength = 16384L,
+            totalLength = 100L,
+            piecesCount = 1,
+            pieceHashes = listOf(ByteArray(20)),
+            files = listOf(TorrentFile(0, "test.txt", 100L, 0, 100L)),
+            announceList = emptyList()
+        )
+
+        // Passing unwritableFile as baseDir (a file cannot be mkdir-ed) with context = null
+        val storage = FileTorrentStorage(unwritableFile, meta)
+        try {
+            storage.prepare()
+            fail("Expected FileCreationFailed")
+        } catch (e: com.nutorrent.core.model.AppError.FileCreationFailed) {
+            assertTrue(e.userMessage.contains("Could not create target download file on disk"))
+            assertEquals(com.nutorrent.core.model.ErrorAction.CHOOSE_LOCATION, e.action)
+        } finally {
+            storage.close()
+        }
+    }
 }

@@ -2,6 +2,12 @@ package com.nutorrent.ui.components
 
 import com.nutorrent.ui.theme.*
 
+import androidx.compose.ui.composed
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -995,5 +1001,238 @@ fun NuAboutEngineDialog(
         },
         containerColor = com.nutorrent.ui.theme.NuDarkCard
     )
+}
+
+/**
+ * Design engineering motion defaults adhering to Emil Kowalski's doctrines:
+ * - Dropdown/menu entrances: 180-220ms
+ * - Exits ~20% shorter than entrances (150ms vs 190ms)
+ * - Popovers start at scale 0.95f, anchored to trigger/top
+ * - Fast reveals & color transitions: 100-140ms
+ * - Non-bouncy critically damped easing (FastOutSlowInEasing)
+ */
+object NuMotionDefaults {
+    const val DropdownEnterDurationMs = 190
+    const val DropdownExitDurationMs = 150 // ~20% shorter
+    const val PopoverInitialScale = 0.95f
+    val PopoverTransformOrigin = TransformOrigin(0.5f, 0.0f) // Anchored to trigger/top, not dead center
+    const val FastRevealDurationMs = 120
+    const val RowStaggerDelayMs = 30
+}
+
+/**
+ * Scales button or clickable surface to 0.97 on press using hardware-accelerated graphicsLayer.
+ * Zero layout re-measuring, exit is 20% faster than entrance.
+ */
+fun Modifier.nuPressable(
+    targetScale: Float = 0.97f,
+    onClick: (() -> Unit)? = null
+): Modifier = composed {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) targetScale else 1.0f,
+        animationSpec = if (isPressed) {
+            tween(durationMillis = 100, easing = FastOutSlowInEasing)
+        } else {
+            tween(durationMillis = 80, easing = FastOutSlowInEasing)
+        },
+        label = "pressScale"
+    )
+    this
+        .graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        }
+        .then(
+            if (onClick != null) {
+                Modifier.clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onClick
+                )
+            } else Modifier
+        )
+}
+
+/**
+ * Staggers entrance of list rows by 30ms with subtle detail settle (12.dp -> 0.dp translateY).
+ */
+fun Modifier.staggeredRowEntrance(
+    index: Int,
+    baseDelayMs: Int = NuMotionDefaults.RowStaggerDelayMs
+): Modifier = composed {
+    var isVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay((index * baseDelayMs).toLong())
+        isVisible = true
+    }
+    val alpha by animateFloatAsState(
+        targetValue = if (isVisible) 1f else 0f,
+        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+        label = "rowAlpha"
+    )
+    val offsetY by animateDpAsState(
+        targetValue = if (isVisible) 0.dp else 12.dp,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "rowOffsetY"
+    )
+    this.graphicsLayer {
+        this.alpha = alpha
+        translationY = offsetY.toPx()
+    }
+}
+
+/**
+ * Applies horizontal squash & stretch (12%) to knobs/toggles during movement/drag.
+ */
+fun Modifier.nuKnobStretch(
+    isMoving: Boolean,
+    stretchFactor: Float = 1.12f
+): Modifier = composed {
+    val scaleX by animateFloatAsState(
+        targetValue = if (isMoving) stretchFactor else 1.0f,
+        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+        label = "knobScaleX"
+    )
+    val scaleY by animateFloatAsState(
+        targetValue = if (isMoving) (1.0f / (stretchFactor * 0.95f)) else 1.0f,
+        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+        label = "knobScaleY"
+    )
+    this.graphicsLayer {
+        this.scaleX = scaleX
+        this.scaleY = scaleY
+    }
+}
+
+/**
+ * Single-cycle success pulse confirmation (1.0 -> 1.12 -> 1.0).
+ */
+@Composable
+fun NuSuccessPulse(
+    trigger: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val scale by animateFloatAsState(
+        targetValue = if (trigger) 1.12f else 1.0f,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "successPulse"
+    )
+    Box(modifier = modifier.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }) {
+        content()
+    }
+}
+
+/**
+ * Transfer Rate (TR) based real-time live throughput indicator with directional pulse,
+ * speed tier badge, and fast 120ms color transitions.
+ */
+@Composable
+fun TrRateIndicator(
+    downloadSpeedBps: Long,
+    uploadSpeedBps: Long,
+    modifier: Modifier = Modifier
+) {
+    val totalRate = downloadSpeedBps + uploadSpeedBps
+    val isTurbo = totalRate > 5_000_000L      // > 5 MB/s
+    val isSustained = totalRate > 500_000L   // > 500 KB/s
+    val isTrickle = totalRate > 10_000L      // > 10 KB/s
+
+    val tierLabel = when {
+        isTurbo -> "TURBO TR"
+        isSustained -> "FAST TR"
+        isTrickle -> "ACTIVE TR"
+        else -> "IDLE TR"
+    }
+
+    val tierColor by animateColorAsState(
+        targetValue = when {
+            isTurbo -> NuCyberEmerald
+            isSustained -> NuPrimary
+            isTrickle -> NuNeonPlasma
+            else -> NuSecondary
+        },
+        animationSpec = tween(durationMillis = NuMotionDefaults.FastRevealDurationMs),
+        label = "tierColor"
+    )
+
+    val infiniteTransition = rememberInfiniteTransition(label = "trPulse")
+    val pulseScale by if (totalRate > 0) {
+        infiniteTransition.animateFloat(
+            initialValue = 0.88f,
+            targetValue = 1.18f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(if (isTurbo) 500 else 900, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "trDotPulse"
+        )
+    } else {
+        remember { mutableFloatStateOf(1.0f) }
+    }
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(tierColor.copy(alpha = 0.12f))
+            .border(1.dp, tierColor.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .graphicsLayer {
+                    scaleX = pulseScale
+                    scaleY = pulseScale
+                }
+                .clip(CircleShape)
+                .background(tierColor)
+        )
+        Text(
+            text = tierLabel,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Black,
+            color = tierColor,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 0.5.sp
+        )
+        if (downloadSpeedBps > 0) {
+            Icon(
+                imageVector = Icons.Default.ArrowDownward,
+                contentDescription = null,
+                tint = tierColor,
+                modifier = Modifier.size(10.dp)
+            )
+            Text(
+                text = FormatUtils.formatSpeed(downloadSpeedBps),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        if (uploadSpeedBps > 0) {
+            Icon(
+                imageVector = Icons.Default.ArrowUpward,
+                contentDescription = null,
+                tint = tierColor.copy(alpha = 0.8f),
+                modifier = Modifier.size(10.dp)
+            )
+            Text(
+                text = FormatUtils.formatSpeed(uploadSpeedBps),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+    }
 }
 

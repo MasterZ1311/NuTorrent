@@ -87,37 +87,70 @@ open class FileTorrentStorage(
     }
 
     override suspend fun prepare() = withContext(Dispatchers.IO) {
-        val isBaseDirValid = try {
-            (baseDir.exists() || baseDir.mkdirs()) && com.nutorrent.data.repository.SettingsRepository.isPathWritable(baseDir.absolutePath, context)
-        } catch (_: Throwable) {
-            false
+        fun tryEnsureWritableDirectory(dir: File): Boolean {
+            return try {
+                if (!dir.exists()) {
+                    dir.mkdirs()
+                }
+                if (dir.exists() && dir.isDirectory) {
+                    val probe = File.createTempFile(".probe_", ".tmp", dir)
+                    val ok = probe.exists()
+                    probe.delete()
+                    ok
+                } else {
+                    false
+                }
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
+        var isBaseDirValid = tryEnsureWritableDirectory(baseDir)
+
+        if (!isBaseDirValid && context != null) {
+            // Auto-healing fallback ladder:
+            // Tier 1: App-specific external storage (NuTorrent)
+            val tier1 = context.getExternalFilesDir(null)?.let { File(it, "NuTorrent") }
+            if (tier1 != null && tryEnsureWritableDirectory(tier1)) {
+                Lg.w(LogCategory.STORAGE, "Base download directory '${baseDir.absolutePath}' not writable; auto-healing to external app storage '${tier1.absolutePath}'")
+                baseDir = tier1
+                onDestinationChanged?.invoke(tier1.absolutePath)
+                isBaseDirValid = true
+            }
+
+            // Tier 2: Internal private storage (always available to app UID)
+            if (!isBaseDirValid) {
+                val tier2 = File(context.filesDir, "NuTorrent").apply { if (!exists()) mkdirs() }
+                if (tryEnsureWritableDirectory(tier2)) {
+                    Lg.w(LogCategory.STORAGE, "External storage not writable; auto-healing to internal app storage '${tier2.absolutePath}'")
+                    baseDir = tier2
+                    onDestinationChanged?.invoke(tier2.absolutePath)
+                    isBaseDirValid = true
+                }
+            }
+
+            // Tier 3: Internal cache storage
+            if (!isBaseDirValid) {
+                val tier3 = File(context.cacheDir, "NuTorrent").apply { if (!exists()) mkdirs() }
+                if (tryEnsureWritableDirectory(tier3)) {
+                    Lg.w(LogCategory.STORAGE, "Internal files storage not writable; auto-healing to cache storage '${tier3.absolutePath}'")
+                    baseDir = tier3
+                    onDestinationChanged?.invoke(tier3.absolutePath)
+                    isBaseDirValid = true
+                }
+            }
         }
 
         if (!isBaseDirValid) {
-            // Auto-healing fallback:
-            // If baseDir cannot be created or written to (e.g. Scoped Storage restriction,
-            // deleted directory, or unwritable volume), automatically heal to the app's
-            // guaranteed-writable directory so downloads never fail with "Cannot create base download directory".
-            val safeDir = context?.let { ctx ->
-                File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "NuTorrent").apply {
-                    if (!exists()) mkdirs()
-                }
-            }
-            if (safeDir != null && (safeDir.exists() || safeDir.mkdirs()) && com.nutorrent.data.repository.SettingsRepository.isPathWritable(safeDir.absolutePath, context)) {
-                Lg.w(LogCategory.STORAGE, "Base download directory '${baseDir.absolutePath}' is not creatable/writable; automatically healing to safe app directory '${safeDir.absolutePath}'")
-                baseDir = safeDir
-                onDestinationChanged?.invoke(safeDir.absolutePath)
+            if (!baseDir.exists() || !baseDir.isDirectory) {
+                throw AppError.FileCreationFailed(
+                    baseDir.absolutePath,
+                    "Cannot create base download directory '${baseDir.absolutePath}'. Please choose a storage location.",
+                    action = com.nutorrent.core.model.ErrorAction.CHOOSE_LOCATION,
+                    actionText = "Choose Folder"
+                )
             } else {
-                if (!baseDir.exists()) {
-                    throw AppError.FileCreationFailed(
-                        baseDir.absolutePath,
-                        "Cannot create base download directory '${baseDir.absolutePath}'. Please choose a storage location.",
-                        action = com.nutorrent.core.model.ErrorAction.CHOOSE_LOCATION,
-                        actionText = "Choose Folder"
-                    )
-                } else {
-                    throw AppError.DestinationNotWritable(baseDir.absolutePath)
-                }
+                throw AppError.DestinationNotWritable(baseDir.absolutePath)
             }
         }
 
@@ -154,13 +187,32 @@ open class FileTorrentStorage(
 
         // Pre-create target files and parent directories only for active files
         for (fileMeta in activeFiles) {
-            val targetFile = resolveAndValidateFile(fileMeta.relativePath)
-            targetFile.parentFile?.mkdirs()
+            var targetFile = resolveAndValidateFile(fileMeta.relativePath)
+            val parent = targetFile.parentFile
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs()
+            }
             if (!targetFile.exists()) {
                 try {
                     targetFile.createNewFile()
                 } catch (e: IOException) {
-                    throw AppError.fromThrowable(e, usable, totalActiveLength)
+                    // If target file cannot be created in current baseDir, attempt auto-healing to internal filesDir
+                    if (context != null && baseDir != context.filesDir) {
+                        val internalSafe = File(context.filesDir, "NuTorrent").apply { if (!exists()) mkdirs() }
+                        baseDir = internalSafe
+                        onDestinationChanged?.invoke(internalSafe.absolutePath)
+                        targetFile = resolveAndValidateFile(fileMeta.relativePath)
+                        targetFile.parentFile?.mkdirs()
+                        if (!targetFile.exists()) {
+                            try {
+                                targetFile.createNewFile()
+                            } catch (e2: IOException) {
+                                throw AppError.fromThrowable(e2, usable, totalActiveLength)
+                            }
+                        }
+                    } else {
+                        throw AppError.fromThrowable(e, usable, totalActiveLength)
+                    }
                 }
             }
         }
@@ -658,7 +710,7 @@ object TorrentStorageFactory {
         onDestinationChanged: ((String) -> Unit)? = null
     ): TorrentStorage {
         val trimmed = destinationPath.trim()
-        val effectivePath = if (trimmed.isBlank()) {
+        val effectivePath = if (trimmed.isBlank() || !com.nutorrent.data.repository.SettingsRepository.isPathWritable(trimmed, context)) {
             val def = com.nutorrent.data.repository.SettingsRepository.getDefaultDownloadDir(context)
             onDestinationChanged?.invoke(def)
             def
@@ -676,7 +728,10 @@ object TorrentStorageFactory {
             }
             if (!com.nutorrent.data.repository.SettingsRepository.isPathWritable(baseDir.absolutePath, context)) {
                 // Guaranteed fallback to app-specific storage if path cannot be created or written
-                val safeFallback = File(context.getExternalFilesDir(null) ?: context.filesDir, "NuTorrent").apply {
+                val safeFallback = File(
+                    context.getExternalFilesDir(null) ?: context.filesDir,
+                    "NuTorrent"
+                ).apply {
                     if (!exists()) mkdirs()
                 }
                 baseDir = safeFallback

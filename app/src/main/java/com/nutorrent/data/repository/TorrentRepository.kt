@@ -158,11 +158,19 @@ class TorrentRepository(
 
         for (entity in entities) {
             try {
+                var effectiveDestPath = entity.destinationPath
+                if (!SettingsRepository.isPathWritable(effectiveDestPath, context)) {
+                    val safeDir = SettingsRepository.getDefaultDownloadDir(context)
+                    Lg.w(LogCategory.STORAGE, "Auto-healing stored torrent '${entity.name}' destination from '$effectiveDestPath' to '$safeDir'")
+                    dao.updateDestinationPath(entity.infoHash, safeDir)
+                    effectiveDestPath = safeDir
+                }
+
                 if (entity.isMagnet && entity.piecesCount == 0) {
                     val torrentId = TorrentId.fromHex(entity.infoHash)
                     val trackers = dao.getTrackersForTorrent(entity.infoHash).map { it.url }
                     if (entity.state == TorrentState.FETCHING_METADATA.name || entity.state == TorrentState.DOWNLOADING.name) {
-                        startMagnetMetadataFetch(torrentId, entity.name, trackers, entity.destinationPath, autoStart = true)
+                        startMagnetMetadataFetch(torrentId, entity.name, trackers, effectiveDestPath, autoStart = true)
                     }
                     continue
                 }
@@ -170,7 +178,7 @@ class TorrentRepository(
                 val metadata = MetainfoParser.parse(entity.rawTorrentBytes)
                 val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
                     context = context,
-                    destinationPath = entity.destinationPath,
+                    destinationPath = effectiveDestPath,
                     metadata = metadata,
                     onDestinationChanged = { newPath ->
                         scope.launch(Dispatchers.IO) {
@@ -197,7 +205,7 @@ class TorrentRepository(
         autoStart: Boolean = true,
         selectedFileIndices: Set<Int>? = null
     ): TorrentSession = withContext(Dispatchers.IO) {
-        val resolvedDestPath = if (destinationPath.isNotBlank()) {
+        val resolvedDestPath = if (destinationPath.isNotBlank() && SettingsRepository.isPathWritable(destinationPath, context)) {
             destinationPath
         } else {
             SettingsRepository.getDefaultDownloadDir(context)
@@ -268,7 +276,7 @@ class TorrentRepository(
         selectedFileIndices: Set<Int>? = null
     ): Unit = withContext(Dispatchers.IO) {
         val infoHex = magnet.torrentId.hex
-        val resolvedDestPath = if (destinationPath.isNotBlank()) {
+        val resolvedDestPath = if (destinationPath.isNotBlank() && SettingsRepository.isPathWritable(destinationPath, context)) {
             destinationPath
         } else {
             SettingsRepository.getDefaultDownloadDir(context)
@@ -363,9 +371,18 @@ class TorrentRepository(
                     dao.insertTrackers(trackerEntities)
                 }
 
+                val targetDestPath = if (SettingsRepository.isPathWritable(destinationPath, context)) {
+                    destinationPath
+                } else {
+                    val safeDir = SettingsRepository.getDefaultDownloadDir(context)
+                    Lg.w(LogCategory.STORAGE, "Healing destinationPath for magnet ${metadata.name} from '$destinationPath' to '$safeDir'")
+                    dao.updateDestinationPath(infoHex, safeDir)
+                    safeDir
+                }
+
                 val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
                     context = context,
-                    destinationPath = destinationPath,
+                    destinationPath = targetDestPath,
                     metadata = metadata,
                     selectedFileIndices = selectedFileIndices,
                     onDestinationChanged = { newPath ->
@@ -392,25 +409,29 @@ class TorrentRepository(
 
     suspend fun resumeTorrent(torrentId: TorrentId) = withContext(Dispatchers.IO) {
         val entity = dao.getTorrent(torrentId.hex)
-        if (entity != null && entity.isMagnet && entity.piecesCount == 0) {
-            dao.updateState(torrentId.hex, TorrentState.FETCHING_METADATA.name)
-            val trackers = dao.getTrackersForTorrent(entity.infoHash).map { it.url }
-            startMagnetMetadataFetch(torrentId, entity.name, trackers, entity.destinationPath, autoStart = true)
-            return@withContext
-        }
-        if (entity != null && !SettingsRepository.isPathWritable(entity.destinationPath, context)) {
+        var effectiveDest = entity?.destinationPath ?: ""
+        if (entity != null && !SettingsRepository.isPathWritable(effectiveDest, context)) {
             val safeDir = SettingsRepository.getDefaultDownloadDir(context)
             Lg.w(LogCategory.STORAGE, "Auto-healing destination path for '${entity.name}' from '${entity.destinationPath}' to '$safeDir'")
             dao.updateDestinationPath(torrentId.hex, safeDir)
             updateTorrentDestination(torrentId, safeDir)
+            effectiveDest = safeDir
         }
+
+        if (entity != null && entity.isMagnet && entity.piecesCount == 0) {
+            dao.updateState(torrentId.hex, TorrentState.FETCHING_METADATA.name)
+            val trackers = dao.getTrackersForTorrent(entity.infoHash).map { it.url }
+            startMagnetMetadataFetch(torrentId, entity.name, trackers, effectiveDest, autoStart = true)
+            return@withContext
+        }
+
         dao.updateState(torrentId.hex, TorrentState.DOWNLOADING.name)
         if (engine.getSession(torrentId) == null && entity != null && !entity.isMagnet && entity.rawTorrentBytes.isNotEmpty()) {
             try {
                 val metadata = MetainfoParser.parse(entity.rawTorrentBytes)
                 val storage = com.nutorrent.data.storage.TorrentStorageFactory.create(
                     context = context,
-                    destinationPath = entity.destinationPath,
+                    destinationPath = effectiveDest,
                     metadata = metadata,
                     onDestinationChanged = { newPath ->
                         scope.launch(Dispatchers.IO) {

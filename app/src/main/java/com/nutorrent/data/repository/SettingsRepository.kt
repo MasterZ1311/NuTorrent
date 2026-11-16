@@ -49,7 +49,12 @@ class SettingsRepository(private val context: Context) {
 
     private fun loadSettings(): UserSettings {
         val savedPath = prefs.getString("download_path", null)
-        val resolvedPath = if (savedPath.isNullOrBlank() || savedPath.endsWith("/Downloads") || savedPath.endsWith("\\Downloads") || !isPathWritable(savedPath, context)) {
+        val isLegacyPublicPath = savedPath != null && !savedPath.startsWith("content://", ignoreCase = true) && (
+            savedPath.contains("/Download", ignoreCase = true) ||
+            savedPath.contains("\\Download", ignoreCase = true)
+        ) && !savedPath.contains("Android/data", ignoreCase = true)
+
+        val resolvedPath = if (savedPath.isNullOrBlank() || isLegacyPublicPath || !isPathWritable(savedPath, context)) {
             val def = getDefaultDownloadDir(context)
             prefs.edit().putString("download_path", def).apply()
             def
@@ -164,18 +169,30 @@ class SettingsRepository(private val context: Context) {
                 } else {
                     path
                 }
+
+                // Under Android 10+ (API 29+), Scoped Storage prevents raw POSIX file creation
+                // in public directories for multi-file torrent operations unless within app package folder.
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val isAppSpecific = cleanPath.contains("Android/data", ignoreCase = true) ||
+                        (context != null && (cleanPath.startsWith(context.filesDir.absolutePath) || 
+                         cleanPath.startsWith(context.cacheDir.absolutePath)))
+                    if (!isAppSpecific) {
+                        val publicStorage = android.os.Environment.getExternalStorageDirectory()?.absolutePath
+                        if (publicStorage != null && cleanPath.startsWith(publicStorage) && !cleanPath.contains("/Android/data/")) {
+                            return false
+                        }
+                    }
+                }
+
                 val dir = File(cleanPath)
                 if (!dir.exists()) {
                     dir.mkdirs()
                 }
                 if (dir.exists() && dir.isDirectory) {
-                    val probe = File(dir, ".probe_${System.currentTimeMillis()}")
-                    if (probe.createNewFile()) {
-                        probe.delete()
-                        true
-                    } else {
-                        false
-                    }
+                    val probe = File.createTempFile(".probe_", ".tmp", dir)
+                    val exists = probe.exists()
+                    probe.delete()
+                    exists
                 } else {
                     false
                 }
@@ -189,25 +206,27 @@ class SettingsRepository(private val context: Context) {
          * Guarantees returning a directory that actually has write permissions.
          */
         fun getDefaultDownloadDir(context: Context): String {
-            // 1. Public Downloads directory: /storage/emulated/0/Download/NuTorrent (if accessible/writable)
+            // 1. App-specific external storage NuTorrent folder
+            // Guaranteed 100% writable without runtime permissions across all Android versions (Android 4.4 - 15+)
             try {
-                val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                if (downloadsDir != null) {
-                    val nuFolder = File(downloadsDir, "NuTorrent")
-                    if (isPathWritable(nuFolder.absolutePath)) {
-                        return nuFolder.absolutePath
+                val externalDir = context.getExternalFilesDir(null)?.let { File(it, "NuTorrent") }
+                if (externalDir != null) {
+                    if (!externalDir.exists()) {
+                        externalDir.mkdirs()
+                    }
+                    if (externalDir.exists() && externalDir.isDirectory) {
+                        return externalDir.absolutePath
                     }
                 }
             } catch (_: Throwable) {}
 
-            // 2. Guaranteed safe fallback: App-specific external storage (.../Android/data/com.nutorrent/files/NuTorrent)
-            // Always writable on all Android versions without requiring broad permissions
-            val appNuFolder = File(context.getExternalFilesDir(null) ?: context.filesDir, "NuTorrent").apply {
+            // 2. Guaranteed safe private internal fallback (always accessible to app UID)
+            val internalDir = File(context.filesDir, "NuTorrent").apply {
                 if (!exists()) {
                     mkdirs()
                 }
             }
-            return appNuFolder.absolutePath
+            return internalDir.absolutePath
         }
     }
 }

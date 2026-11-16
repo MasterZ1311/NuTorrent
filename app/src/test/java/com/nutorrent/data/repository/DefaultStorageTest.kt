@@ -49,4 +49,20 @@ class DefaultStorageTest {
         val formatted = FormatUtils.formatStoragePath(safPrimary)
         assertTrue(formatted.contains("NuTorrent"))
     }
+
+    @Test
+    fun testIsPathWritableValidation() {
+        // Blank or null paths
+        org.junit.Assert.assertFalse(SettingsRepository.isPathWritable(null))
+        org.junit.Assert.assertFalse(SettingsRepository.isPathWritable(""))
+        org.junit.Assert.assertFalse(SettingsRepository.isPathWritable("   "))
+
+        // Valid writable temp folder
+        val validFolder = tempFolder.newFolder("writable_dir")
+        assertTrue(SettingsRepository.isPathWritable(validFolder.absolutePath))
+
+        // A plain file should not be considered a writable directory
+        val plainFile = File(validFolder, "sample.txt").apply { createNewFile() }
+        org.junit.Assert.assertFalse(SettingsRepository.isPathWritable(plainFile.absolutePath))
+    }
 }
