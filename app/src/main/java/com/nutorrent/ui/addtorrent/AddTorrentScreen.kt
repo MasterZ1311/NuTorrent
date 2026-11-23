@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -615,9 +616,10 @@ fun AddTorrentScreen(
                             ) {
                                 OutlinedButton(
                                     onClick = onCancel,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                                 ) {
-                                    Text("Cancel")
+                                    Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                                 Button(
                                     onClick = {
@@ -632,13 +634,19 @@ fun AddTorrentScreen(
                                         }
                                     },
                                     modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                                     colors = if (assessment?.isInsufficient == true) {
                                         ButtonDefaults.buttonColors(containerColor = NuWarning)
                                     } else {
                                         ButtonDefaults.buttonColors()
                                     }
                                 ) {
-                                    Text(if (assessment?.isInsufficient == true) "Low Space" else "Start Download")
+                                    Text(
+                                        if (assessment?.isInsufficient == true) "Low Space" else "Start Download",
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
                         }

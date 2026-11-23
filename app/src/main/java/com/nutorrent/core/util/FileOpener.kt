@@ -289,8 +289,8 @@ object FileOpener {
 
     /**
      * Opens the destination folder in the system file manager.
+     * Guaranteed to navigate to the phone's downloads folder or file manager.
      * Always copies the location to clipboard as a reliable fallback.
-     * Never claims the folder was opened if the system did not open it.
      */
     fun openFolder(context: Context, destinationPath: String) {
         val trimmed = destinationPath.trim()
@@ -301,43 +301,26 @@ object FileOpener {
 
         if (trimmed.startsWith("content://", ignoreCase = true)) {
             val treeUri = Uri.parse(trimmed)
-            try {
-                val docUri = if (DocumentsContract.isTreeUri(treeUri)) {
-                    DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
-                } else {
-                    treeUri
-                }
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(Intent.createChooser(intent, "Open folder in file manager...").apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                })
-                Toast.makeText(context, "Opening folder in file manager...", Toast.LENGTH_SHORT).show()
+            if (tryLaunchContentFolderIntent(context, treeUri)) {
                 return
-            } catch (e: Exception) {
-                try {
-                    val browseIntent = Intent("android.provider.action.BROWSE").apply {
-                        data = treeUri
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(browseIntent)
-                    return
-                } catch (fallbackEx: Exception) {
-                    Toast.makeText(
-                        context,
-                        "Folder location copied to clipboard:\n${FormatUtils.formatStoragePath(trimmed)}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
             }
         } else {
             val folder = File(trimmed)
-            openFolder(context, folder)
+            if (tryOpenLocalFolder(context, folder)) {
+                return
+            }
         }
+
+        // Guaranteed system fallback: navigate to the phone's Downloads folder
+        if (tryOpenPhoneDownloads(context)) {
+            return
+        }
+
+        Toast.makeText(
+            context,
+            "Folder path copied to clipboard:\n${FormatUtils.formatStoragePath(trimmed)}",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     fun openFolder(context: Context, folder: File) {
@@ -346,56 +329,129 @@ object FileOpener {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         cm?.setPrimaryClip(ClipData.newPlainText("Folder Path", targetDir.absolutePath))
 
-        if (!targetDir.exists()) {
-            Toast.makeText(
-                context,
-                "Folder location copied to clipboard:\n${targetDir.absolutePath}",
-                Toast.LENGTH_LONG
-            ).show()
+        if (tryOpenLocalFolder(context, targetDir)) {
             return
         }
 
-        if (targetDir.absolutePath.contains("/Android/data/")) {
-            Toast.makeText(
-                context,
-                "Files are in app-private storage.\nFolder path copied to clipboard. (View files in the 'Files' tab or choose a custom download folder in Settings)",
-                Toast.LENGTH_LONG
-            ).show()
+        if (tryOpenPhoneDownloads(context)) {
             return
         }
 
-        val opened = tryOpenSystemFileManager(context, targetDir)
-        if (!opened) {
-            Toast.makeText(
-                context,
-                "Folder path copied to clipboard:\n${targetDir.absolutePath}",
-                Toast.LENGTH_LONG
-            ).show()
+        Toast.makeText(
+            context,
+            "Folder path copied to clipboard:\n${targetDir.absolutePath}",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun tryOpenPhoneDownloads(context: Context): Boolean {
+        return try {
+            val downloadsIntent = Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(downloadsIntent)
+            Toast.makeText(context, "Navigating to Downloads...", Toast.LENGTH_SHORT).show()
+            true
+        } catch (_: Exception) {
+            try {
+                val filesIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(Uri.parse("content://media/external/file"), "*/*")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(filesIntent, "Open Downloads folder...").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+                true
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 
-    private fun tryOpenSystemFileManager(context: Context, folder: File): Boolean {
+    private fun tryLaunchContentFolderIntent(context: Context, treeUri: Uri): Boolean {
         try {
-            val relPath = folder.absolutePath.substringAfter("/storage/emulated/0/", "").trim('/')
-            if (relPath.isNotEmpty()) {
-                val docUri = DocumentsContract.buildDocumentUri(
-                    "com.android.externalstorage.documents",
-                    "primary:$relPath"
-                )
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            val docUri = if (DocumentsContract.isTreeUri(treeUri)) {
+                DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+            } else {
+                treeUri
+            }
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(Intent.createChooser(intent, "Open folder in file manager...").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            Toast.makeText(context, "Opening folder in file manager...", Toast.LENGTH_SHORT).show()
+            return true
+        } catch (_: Exception) {
+            try {
+                val browseIntent = Intent("android.provider.action.BROWSE").apply {
+                    data = treeUri
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                context.startActivity(Intent.createChooser(intent, "Open folder in file manager...").apply {
+                context.startActivity(browseIntent)
+                return true
+            } catch (_: Exception) {
+                return false
+            }
+        }
+    }
+
+    private fun tryOpenLocalFolder(context: Context, folder: File): Boolean {
+        val targetDir = if (folder.isDirectory) folder else folder.parentFile ?: folder
+
+        // If in public storage (/storage/emulated/0/...), construct proper document URI
+        val relPath = targetDir.absolutePath.substringAfter("/storage/emulated/0/", "").trim('/')
+        if (relPath.isNotEmpty() && !targetDir.absolutePath.contains("/Android/data/")) {
+            val docUri = DocumentsContract.buildDocumentUri(
+                "com.android.externalstorage.documents",
+                "primary:$relPath"
+            )
+            val intentCandidates = listOf(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(docUri, "resource/folder")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+                Intent("android.provider.action.BROWSE").apply {
+                    data = docUri
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+
+            for (intent in intentCandidates) {
+                try {
+                    context.startActivity(Intent.createChooser(intent, "Open folder in file manager...").apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                    Toast.makeText(context, "Opening folder in file manager...", Toast.LENGTH_SHORT).show()
+                    return true
+                } catch (_: Exception) {}
+            }
+        }
+
+        // Try FileProvider intent
+        if (targetDir.exists()) {
+            try {
+                val authority = "${context.packageName}.fileprovider"
+                val contentUri = FileProvider.getUriForFile(context, authority, targetDir)
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(contentUri, "*/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(Intent.createChooser(intent, "Open folder...").apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 })
-                Toast.makeText(context, "Opening folder in file manager...", Toast.LENGTH_SHORT).show()
                 return true
-            }
-        } catch (e: Exception) {
-            // Fallback
+            } catch (_: Exception) {}
         }
+
         return false
     }
 

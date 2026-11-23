@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -1198,10 +1199,10 @@ fun HomeScreen(
                         }
                         OutlinedButton(
                             onClick = { magnetFolderPickerLauncher.launch(null) },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                            modifier = Modifier.height(32.dp)
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.defaultMinSize(minHeight = 34.dp)
                         ) {
-                            Text("Change", fontSize = 11.sp)
+                            Text("Change", fontSize = 11.sp, maxLines = 1)
                         }
                     }
                 }
@@ -1485,19 +1486,21 @@ fun EmptyHomeState(
             ) {
                 FilledTonalButton(
                     modifier = Modifier.weight(1f),
-                    onClick = onAddTorrentClick
+                    onClick = onAddTorrentClick,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
                 ) {
                     Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Open .torrent", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Open .torrent", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 OutlinedButton(
                     modifier = Modifier.weight(1f),
-                    onClick = onAddMagnetClick
+                    onClick = onAddMagnetClick,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
                 ) {
                     Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Paste Magnet", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Paste Magnet", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
 
@@ -1799,10 +1802,16 @@ fun TorrentCard(
                                 else -> onResumeClick()
                             }
                         },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        modifier = Modifier.height(28.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        modifier = Modifier.defaultMinSize(minHeight = 34.dp),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text(item.error?.actionText ?: "Retry", fontSize = 11.sp)
+                        Text(
+                            item.error?.actionText ?: "Retry",
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
@@ -1858,9 +1867,7 @@ fun TorrentCard(
                                 torrentName = item.name
                             )
                         },
-                        modifier = Modifier
-                            .size(36.dp)
-                            .minimumInteractiveComponentSize()
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.FileOpen,
@@ -1876,9 +1883,7 @@ fun TorrentCard(
                     onClick = {
                         com.nutorrent.core.util.FileOpener.openFolder(context, item.destinationPath)
                     },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .minimumInteractiveComponentSize()
+                    modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Folder,
@@ -1891,17 +1896,13 @@ fun TorrentCard(
                 if (isAdvancedMode && item.state == TorrentState.QUEUED) {
                     IconButton(
                         onClick = onMoveUp,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .minimumInteractiveComponentSize()
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up", modifier = Modifier.size(18.dp))
                     }
                     IconButton(
                         onClick = onMoveDown,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .minimumInteractiveComponentSize()
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down", modifier = Modifier.size(18.dp))
                     }
@@ -1910,9 +1911,7 @@ fun TorrentCard(
                 if (item.state.isActive) {
                     IconButton(
                         onClick = onPauseClick,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .minimumInteractiveComponentSize()
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Pause,
@@ -1924,9 +1923,7 @@ fun TorrentCard(
                 } else if (item.state == TorrentState.PAUSED || item.state == TorrentState.QUEUED) {
                     IconButton(
                         onClick = onResumeClick,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .minimumInteractiveComponentSize()
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
@@ -1938,9 +1935,7 @@ fun TorrentCard(
                 } else if (item.state == TorrentState.ERROR) {
                     IconButton(
                         onClick = onResumeClick,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .minimumInteractiveComponentSize()
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
@@ -1952,9 +1947,7 @@ fun TorrentCard(
                 }
                 IconButton(
                     onClick = onDeleteClick,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .minimumInteractiveComponentSize()
+                    modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.DeleteOutline,

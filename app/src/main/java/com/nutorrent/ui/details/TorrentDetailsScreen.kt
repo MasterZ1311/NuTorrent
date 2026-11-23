@@ -491,22 +491,22 @@ fun StickyTransferSummaryHeader(
             if (sessionState.isActive) {
                 Button(
                     onClick = onPauseClick,
-                    modifier = Modifier.weight(1.3f),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    modifier = Modifier.weight(1.2f),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
                 ) {
                     Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Pause", fontSize = 11.sp, maxLines = 1)
+                    Text("Pause", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             } else {
                 Button(
                     onClick = onResumeClick,
-                    modifier = Modifier.weight(1.3f),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    modifier = Modifier.weight(1.2f),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
                 ) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Resume", fontSize = 11.sp, maxLines = 1)
+                    Text("Resume", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
 
@@ -520,7 +520,7 @@ fun StickyTransferSummaryHeader(
                     }
                 },
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
             ) {
                 Icon(
                     if (isComplete) Icons.Default.FileOpen else Icons.Default.Description,
@@ -528,24 +528,22 @@ fun StickyTransferSummaryHeader(
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(modifier = Modifier.width(3.dp))
-                Text(if (isComplete) "Open" else "Files", fontSize = 11.sp, maxLines = 1)
+                Text(if (isComplete) "Open" else "Files", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
 
             OutlinedButton(
                 onClick = onForceRecheckClick,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
+                modifier = Modifier.weight(1.1f),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
             ) {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
                 Spacer(modifier = Modifier.width(3.dp))
-                Text("Recheck", fontSize = 11.sp, maxLines = 1)
+                Text("Recheck", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
 
             IconButton(
                 onClick = onDeleteClick,
-                modifier = Modifier
-                    .size(36.dp)
-                    .minimumInteractiveComponentSize()
+                modifier = Modifier.size(36.dp)
             ) {
                 Icon(
                     Icons.Default.DeleteOutline,
@@ -708,21 +706,23 @@ fun OverviewTab(
                                     torrentName = item.name
                                 )
                             },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Open File")
+                            Text("Open File", maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         OutlinedButton(
                             onClick = {
                                 com.nutorrent.core.util.FileOpener.openFolder(context, item.destinationPath)
                             },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                         ) {
                             Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Open Folder")
+                            Text("Open Folder", maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -903,21 +903,23 @@ fun OverviewTab(
                                 torrentName = item.name
                             )
                         },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Open File", fontSize = 12.sp)
+                        Text("Open File", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     OutlinedButton(
                         onClick = {
                             com.nutorrent.core.util.FileOpener.openFolder(context, item.destinationPath)
                         },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                     ) {
                         Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Open Folder", fontSize = 12.sp)
+                        Text("Open Folder", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Row(
@@ -926,19 +928,21 @@ fun OverviewTab(
                 ) {
                     OutlinedButton(
                         onClick = onChangeLocationClick,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                     ) {
                         Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Change Location", fontSize = 12.sp)
+                        Text("Change Folder", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     OutlinedButton(
                         onClick = onViewFilesClick,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                     ) {
                         Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("View Files", fontSize = 12.sp)
+                        Text("View Files", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 OutlinedButton(
@@ -946,11 +950,12 @@ fun OverviewTab(
                         clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(item.destinationPath))
                         copiedPath = true
                     },
-                    modifier = Modifier.padding(top = 8.dp).fillMaxWidth()
+                    modifier = Modifier.padding(top = 8.dp).fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                 ) {
                     Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (copiedPath) "Path Copied to Clipboard!" else "Copy Storage Path", fontSize = 12.sp)
+                    Text(if (copiedPath) "Copied to Clipboard!" else "Copy Storage Path", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
